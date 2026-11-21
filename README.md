@@ -18,8 +18,9 @@
 **面板**
 
 - 封面、曲名、歌手、专辑、进度条与时间、来源应用名；可选择隐藏其中任意一项
-- 封面支持普通方图与旋转黑胶（按曲目重置角度，暂停即停转，转速 20–120 °/s 可调）
-- 进度在采样之间按时间外推，700 ms 采样率下进度条也是连续走动的；取不到系统进度时可选择从 0 自行计时
+- 封面支持普通方图与旋转黑胶（按曲目重置角度，暂停即停转，转速 0–240 °/s 可调）
+- 进度在采样之间按时间外推：播放器每 150 ms（默认采样间隔，可在 60–5000 之间调）发布一次位置，
+  中间由本地时钟补足，因此即使播放器几秒才更新一次，进度条也是连续走动的；取不到系统进度时可选择从 0 自行计时
 - 五种停靠位置（四角 + 居中）、缩放、宽度、透明度、圆角、阴影、偏移、三组颜色全部可调
 - 自适应宽度：按曲名 / 歌手 / 专辑的实际像素长度收放（歌词不参与）
 - 换歌宽限期（默认 1200 ms）：切歌瞬间沿用上一首快照，面板不会闪一下消失
@@ -28,7 +29,8 @@
 **歌词**
 
 - 当前行 + 上下文 1–4 行，自动带上歌词文件自带的翻译行；没有翻译时可选择上下双行显示
-- 卡拉 OK：当前行按进度从左到右填充强调色，扫描边缘 10 px 羽化并按字心距离混色（可关）
+- 卡拉 OK：当前行按进度从左到右填充强调色，扫描边缘按字心距离在底色与强调色之间混色，
+  所以是一道平滑推过的渐变，而不是一个个字突然变色（可关）
 - 卡拉 OK 增幅：播放头附近的字轻微隆起放大（增益与半径可调）
 - 长音缓行：长音按真实音符时长横向拉伸，没有逐字数据时按字长估计扫过速度
 - 逐字数据优先（KRC / YRC），没有逐字数据时退化为整行均分
@@ -60,15 +62,17 @@
 
 1. 在启动器里装 Fabric Loader（26.3）与对应版本的 Fabric API
 2. 把 `smtcraft-<version>.jar` 放进 `.minecraft/mods`（同一个模组只留一个版本）
-3. **启动器 JVM 参数加 `--enable-native-access=ALL-UNNAMED`**（老启动器写作
-   `-J--enable-native-access=ALL-UNNAMED`），并去掉 `--illegal-native-access=deny`。
-   缺这一项时 JDK 24+ 只给警告，表现为「没有会话」、HUD 空白
+3. **启动器 JVM 参数加 `--enable-native-access=ALL-UNNAMED`（必做）**，老启动器写作
+   `-J--enable-native-access=ALL-UNNAMED`；同时去掉 `--illegal-native-access=deny`。
+   JDK 24+ 对 FFM 受限方法默认只警告，但部分启动器以 `deny` 启动；一旦被拒绝，
+   症状是「没有会话」、HUD 一直空白。打包 jar 的 manifest 里也写了这个属性，
+   但那只对 `java -jar` 生效——模组走 classpath 加载，启动器不会读它，所以这一步不能省
 4. 启动游戏，HUD 默认在左上角，按 `F8` 开关
 5. 可选：装 Mod Menu，模组列表里本模组右侧会出现 ⚙ 设置按钮
 6. Linux 额外装好系统 D-Bus 库；缺库时游戏照常启动，只是不显示 HUD（日志与设置页会写明原因）
 
-> 模组 jar 的 manifest 里已经声明 `Enable-Native-Access: ALL-UNNAMED`，所以多数情况下第 3 步可以省略；
-> 但启动器若显式传了 `--illegal-native-access=deny`，命令行优先级更高，必须删掉那一项。
+> 上传之后最常见的反馈是「HUD 空白 / 没有会话」，第一件事就是查启动参数里有没有
+> `--enable-native-access=ALL-UNNAMED`。
 
 ## 使用
 
@@ -99,12 +103,12 @@
 | `scale` | `1.0` | 整体缩放 |
 | `panelWidth` | `300` | 面板设计宽度（像素） |
 | `backgroundOpacity` | `0.62` | 面板底色不透明度 |
-| `cornerRadius` | `8` | 圆角半径（0–12） |
+| `cornerRadius` | `8` | 圆角半径（0–24，与设置界面滑条同一来源） |
 | `theme` | `"netease"` | `netease` / `midnight` / `aurora` / `sakura` / `sunset` / `mono` |
 | `textColor` / `dimTextColor` / `accentColor` | `#FFFFFF` / `#B8BCC4` / `#3FDC6E` | 主文字 / 次要文字 / 强调色 |
 | `customColors` | `""` | 逗号分隔的自定义颜色键；非空时主题标签显示「自定义」 |
 | `adaptiveWidth` | `true` | 按标题长度自适应面板宽度 |
-| `vinyl` / `vinylSpinSpeed` | `true` / `38.0` | 黑胶封面与转速 |
+| `vinyl` / `vinylSpinSpeed` | `true` / `38.0` | 黑胶封面与转速（0–240 °/s） |
 | `showLyrics` | `true` | 歌词窗口 |
 | `showTranslation` | `true` | 歌词翻译行 |
 | `karaoke` | `true` | 卡拉 OK 填充 |
@@ -191,15 +195,19 @@ Mod Menu 来自 Modrinth 或它的 maven，`mc-libs` 是客户端 jar 里 `libra
 
 ### 方式 B：Gradle
 
+仓库**不带 Gradle wrapper**（没有 `gradlew`，也没有 `gradle/wrapper/`），所以下面用本机已安装的
+`gradle`；只装了 JDK 的话直接用方式 A。
+
 ```bash
-./gradlew build -PtoolchainDir=/path/to/toolchain
+gradle build -PtoolchainDir=/path/to/toolchain
 # 产物同样在 build/libs/
 ```
 
 - `-PtoolchainDir` 默认是 `../toolchain`
 - 在 `Downloads` 这类受限目录里构建时，用 `-PbuildDirOverride=/path/outside/Downloads` 把
   `build/` 与 `.gradle/` 移出去
-- `./gradlew selfTest` 直接调用 `test.sh`；`./gradlew check` 也挂在它上面
+- `gradle selfTest` 直接调用 `test.sh`；`gradle check` 也挂在它上面
+- 方式 A 与方式 B 产出同一个 jar（都是纯 `javac` + `jar`，没有 Loom、不 remap）
 
 ### 离线自测
 
@@ -270,7 +278,6 @@ src/main/java/org/yinyun/smtcraft/
 ├── SmtcConfig.java             配置读写与热加载（Gson，原子替换）
 ├── ModMenuIntegration.java     Mod Menu 入口
 ├── audio/MusicMuter.java       播放时静音游戏音乐
-├── crypto/                     资源包加密（本机字体包）
 ├── font/FontPack.java          本机字体 → 资源包 → 热重载
 ├── gui/SettingsScreen.java     游戏内设置界面（四标签页 + 滚动）
 ├── media/                      MediaBridge 接口、按平台选择、空实现
@@ -291,6 +298,8 @@ build.gradle                   等价的可选构建路径 + selfTest 任务
 - 只在客户端生效（`environment: client`），服务器无需安装
 - 除 Windows 与 Linux 外的平台显示空 HUD
 - 三家歌词接口都不是官方接口，可能随时变化，见上一节的自修流程
+- 播放器发布周期长于 2.5 s 时，进度按最近一次真实步进外推，最多可能落后 2.4 s 再被追平
+- 开启跑马灯的歌词行在换行退场的那一帧，横向偏移偶有轻微跳变
 - 仅当播放器把信息写进系统媒体会话时才可见（部分播放器默认关闭该功能）
 
 ## 许可

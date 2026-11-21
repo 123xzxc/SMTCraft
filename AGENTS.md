@@ -24,7 +24,8 @@ QQ 音乐的公开接口。**没有服务端组件，没有账号，没有密钥
   `cygpath` 拼出坏 classpath，报出成百条「找不到符号 com.google.gson」
 - `build.sh` 的类文件暂存在工具链旁边的 `smtc-build/`（Windows「受控文件夹访问」不允许
   `java.exe` 在 `Downloads` 下建目录）；需要换位置用环境变量 `SMTCRAFT_STAGE`
-- Gradle 路径等价：`./gradlew build -PtoolchainDir=...`，`./gradlew selfTest` 转调 `test.sh`
+- Gradle 路径等价（仓库没有 wrapper，用本机 `gradle`）：`gradle build -PtoolchainDir=...`，
+  `gradle selfTest` 转调 `test.sh`
 
 ## 改动纪律
 

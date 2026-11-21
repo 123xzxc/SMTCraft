@@ -310,7 +310,8 @@ public final class SettingsScreen extends Screen {
         addSlider(x0, y, colW, rowH, 120d, 420d, cfg.panelWidth,
                 v -> cfg.panelWidth = (int) Math.round(v),
                 v -> Component.translatable("smtcraft.opt.width", (int) Math.round(v)));
-        addSlider(x1, y, colW, rowH, 0d, 24d, cfg.cornerRadius,
+        addSlider(x1, y, colW, rowH, SmtcConfig.MIN_CORNER_RADIUS, SmtcConfig.MAX_CORNER_RADIUS,
+                cfg.cornerRadius,
                 v -> cfg.cornerRadius = (int) Math.round(v),
                 v -> Component.translatable("smtcraft.opt.radius", (int) Math.round(v)));
         y += step;
@@ -321,7 +322,8 @@ public final class SettingsScreen extends Screen {
                 v -> cfg.offsetY = (int) Math.round(v),
                 v -> Component.translatable("smtcraft.opt.offset_y", (int) Math.round(v)));
         y += step;
-        addSlider(x0, y, colW, rowH, 0d, 720d, cfg.vinylSpinSpeed,
+        addSlider(x0, y, colW, rowH, SmtcConfig.MIN_VINYL_SPIN, SmtcConfig.MAX_VINYL_SPIN,
+                cfg.vinylSpinSpeed,
                 v -> {
                     cfg.vinylSpinSpeed = (float) v;
                     if (!cfg.vinyl) cfg.vinyl = true;

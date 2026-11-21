@@ -104,6 +104,10 @@ public final class SmtcConfig {
     /** Vinyl rotation speed in degrees per second, only used when vinyl is on. */
     public float vinylSpinSpeed = 38.0f;
 
+    /** Range the spin slider offers and {@link #normalise()} accepts (D4). */
+    public static final float MIN_VINYL_SPIN = 0.0f;
+    public static final float MAX_VINYL_SPIN = 240.0f;
+
     /** Grow the panel until title / artist / album fit (capped, lyrics excluded). */
     public boolean adaptiveWidth = true;
     /** Without artwork the text block is centred instead of left aligned. */
@@ -118,6 +122,14 @@ public final class SmtcConfig {
 
     /** Rounded panel corners; 0 keeps the current square panel. */
     public int cornerRadius = 8;
+
+    /**
+     * Range the corner slider offers and {@link #normalise()} accepts. One
+     * author, two readers: the README used to quote a third opinion (D3).
+     */
+    public static final int MIN_CORNER_RADIUS = 0;
+    public static final int MAX_CORNER_RADIUS = 24;
+
 
     // --- audio -------------------------------------------------------------
     /** Silence vanilla background music while a SMTC track is playing. */
@@ -352,7 +364,7 @@ public final class SmtcConfig {
         scale = clamp(scale, 0.5f, 3.0f);
         panelWidth = (int) Math.round(clamp(panelWidth, 120, 470));
         backgroundOpacity = clamp(backgroundOpacity, 0.0f, 1.0f);
-        cornerRadius = (int) Math.round(clamp(cornerRadius, 0, 24));
+        cornerRadius = (int) Math.round(clamp(cornerRadius, MIN_CORNER_RADIUS, MAX_CORNER_RADIUS));
         offsetX = (int) Math.round(clamp(offsetX, -4096, 4096));
         offsetY = (int) Math.round(clamp(offsetY, -4096, 4096));
         lyricLines = (int) Math.round(clamp(lyricLines, 0, 4));
@@ -361,7 +373,7 @@ public final class SmtcConfig {
         lyricOffsetMs = (int) Math.round(clamp(lyricOffsetMs, -60_000, 60_000));
         karaokePeakAmount = clamp(karaokePeakAmount, 0.0f, 0.5f);
         karaokePeakRange = (int) Math.round(clamp(karaokePeakRange, 0, 64));
-        vinylSpinSpeed = clamp(vinylSpinSpeed, 0.0f, 240.0f);
+        vinylSpinSpeed = clamp(vinylSpinSpeed, MIN_VINYL_SPIN, MAX_VINYL_SPIN);
         pollIntervalMs = (int) Math.round(clamp(pollIntervalMs, 60, 5000));
         swapGraceMs = (int) Math.round(clamp(swapGraceMs, 0, 10_000));
         if (theme == null || theme.isBlank()) theme = "netease";
