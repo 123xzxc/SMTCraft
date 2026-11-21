@@ -1,0 +1,143 @@
+plugins {
+    id 'java'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+// ---------------------------------------------------------------------------
+// Minecraft 26.3 ships an ALREADY DEOBFUSCATED client jar and Fabric publishes
+// no Yarn / Intermediary / Mojang mappings for the 26.x line (both stop at
+// 1.21.11). There is therefore nothing to remap, so Loom's mapping pipeline is
+// skipped entirely and the mod is built with a plain javac + jar pass against
+// the game jar and its libraries.
+//
+// Point -PtoolchainDir at a directory holding:
+//   mc-client-26.3.jar, fabric-loader-0.20.1.jar,
+//   mc-libs/*.jar, apijars/META-INF/jars/*.jar   (extracted fabric-api modules)
+// ---------------------------------------------------------------------------
+// Windows Defender's Controlled Folder Access blocks java.exe from creating
+// directories under a user profile's Downloads folder, which breaks any Gradle
+// build whose build/ and .gradle/ live there. Pass -PbuildDirOverride=<path>
+// outside Downloads to move the outputs; javac + jar (build.sh) stage there too.
+if (project.hasProperty("buildDirOverride")) {
+    layout.buildDirectory = file(project.property("buildDirOverride"))
+}
+
+def toolchainDir = file(project.findProperty("toolchainDir") ?: "../toolchain")
+def mcClient = new File(toolchainDir, "mc-client-${minecraft_version}.jar")
+def loaderJar = new File(toolchainDir, "fabric-loader-${loader_version}.jar")
+def mcLibs = new File(toolchainDir, "mc-libs")
+def apiJars = new File(toolchainDir, "apijars/META-INF/jars")
+
+[ [ "Minecraft client", mcClient ],
+  [ "fabric-loader", loaderJar ],
+  [ "MC libraries dir", mcLibs ],
+  [ "fabric-api modules", apiJars ] ].each { label, f ->
+    if (!f.exists()) {
+        logger.warn("[smtcraft] missing ${label}: ${f} - compile will fail")
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+// Mod Menu is optional at RUNTIME (the "modmenu" entrypoint is ignored when the
+// mod is missing) but it is a hard COMPILE dependency: ModMenuIntegration.java
+// implements its API, so a build without the jar cannot compile that class.
+// Make the requirement explicit instead of failing later inside javac.
+def modmenuJar = new File(toolchainDir, "modmenu-21.0.0.jar")
+
+dependencies {
+    compileOnly files(mcClient)
+    compileOnly files(loaderJar)
+    compileOnly fileTree(dir: mcLibs, include: ["*.jar"])
+    compileOnly fileTree(dir: apiJars, include: ["*.jar"])
+    compileOnly files(modmenuJar)
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.encoding = "UTF-8"
+    // Fail when the compile actually needs Mod Menu, not while the build script
+    // is being configured: a missing optional jar used to break `clean` and
+    // `tasks` as well (D1).
+    doFirst {
+        if (!modmenuJar.exists()) {
+            throw new GradleException("[smtcraft] missing " + modmenuJar +
+                    " - Mod Menu is required to compile ModMenuIntegration.java")
+        }
+    }
+}
+
+// The offline regression suite used to be reachable only through test.sh, so it
+// was easy to skip and impossible to run from an IDE (R3-7). This task shells out
+// to the same script, which keeps a single definition of the suite.
+// Git for Windows does not put bash on PATH by default, so a bare "bash" failed with
+// CreateProcess error=2 and no hint about what was missing (R4-8). Probe instead.
+def bashCommand = {
+    List<String> candidates = ["bash"]
+    if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+        candidates += [
+                "C:/Program Files/Git/bin/bash.exe",
+                "C:/Program Files (x86)/Git/bin/bash.exe",
+                System.getProperty("user.home") + "/AppData/Local/Programs/Git/bin/bash.exe"
+        ]
+    }
+    for (String candidate : candidates) {
+        try {
+            Process probe = new ProcessBuilder(candidate, "-c", "exit 0")
+                    .redirectErrorStream(true).start()
+            if (probe.waitFor() == 0) return candidate
+        } catch (Exception ignored) {
+            // try the next location
+        }
+    }
+    throw new GradleException("[smtcraft] selfTest needs bash: install Git for Windows " +
+            "(C:/Program Files/Git/bin/bash.exe) or put bash on PATH")
+}
+
+tasks.register("selfTest", Exec) {
+    group = "verification"
+    description = "Runs the offline regression tests (no Minecraft jar, no network)."
+    workingDir = projectDir
+    // test.sh takes the toolchain as its first argument and finds the JDK itself,
+    // so JAVA_HOME would not have any effect here.
+    doFirst {
+        commandLine bashCommand(), "test.sh", toolchainDir.absolutePath
+    }
+}
+
+tasks.named("check") {
+    dependsOn tasks.named("selfTest")
+}
+
+processResources {
+    inputs.property "version", project.version
+    filesMatching("fabric.mod.json") {
+        expand "version": inputs.properties.version
+    }
+}
+
+jar {
+    // FFM (java.lang.foreign) needs native access; declaring it here means the
+    // mod works without an extra launcher flag (A22).
+    manifest {
+        attributes("Enable-Native-Access": "ALL-UNNAMED")
+    }
+    // Apache-2.0 §4(a): every jar built by Gradle must carry the licence text and
+    // the attribution file, exactly like the jar built by build.sh.
+    from("LICENSE") {
+        rename { "${it}_${project.base.archivesName.get()}" }
+    }
+    from("THIRD_PARTY_NOTICES.md") {
+        rename { "THIRD_PARTY_NOTICES_${project.base.archivesName.get()}.md" }
+    }
+}

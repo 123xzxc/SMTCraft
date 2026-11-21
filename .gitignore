@@ -1,0 +1,25 @@
+# build output
+build/
+out/
+.gradle/
+
+# local toolchain (client jar, libraries, JDK) - never part of the repo
+toolchain/
+smtc-build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# runtime instance
+run/
+config/
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

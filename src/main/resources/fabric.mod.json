@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "smtcraft",
+  "version": "${version}",
+  "name": "SMTCraft",
+  "description": "Shows what your system is playing right now - title, artist, album, cover art, synced lyrics with translation and a syllable-synced karaoke wipe - straight in your HUD. On Windows the metadata comes from the system media session (SMTC), on Linux from MPRIS2 over the D-Bus session bus, both through pure Java FFM with no helper process; lyrics come from Kugou (KRC), NetEase Cloud Music (YRC) and QQ Music (QRC).",
+  "authors": [
+    "123xzxc"
+  ],
+  "contact": {},
+  "license": "MIT (third-party portions Apache-2.0, see THIRD_PARTY_NOTICES.md, bundled as THIRD_PARTY_NOTICES_smtcraft.md)",
+  "icon": "assets/smtcraft/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "org.yinyun.smtcraft.SmtcCraftClient"
+    ],
+    "modmenu": [
+      "org.yinyun.smtcraft.ModMenuIntegration"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "fabric-api": ">=0.166.2",
+    "minecraft": ">=26.0 <27.0",
+    "java": ">=25"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}
