@@ -221,7 +221,7 @@ public final class SettingsScreen extends Screen {
             widget.setY(y);
             // hidden, not merely covered: a widget scrolled under the tab row would
             // otherwise paint over it and still take clicks
-            widget.visible = y + widget.getHeight() > top - 2 && y < bottom + 2;
+            Widgets.visible(widget, y + widget.getHeight() > top - 2 && y < bottom + 2);
         }
         captions.clear();
         for (Caption caption : baseCaptions) {
@@ -913,9 +913,18 @@ public final class SettingsScreen extends Screen {
         return super.mouseReleased(event);
     }
 
-    @Override
+    /** 26.1 up to 26.4-snapshot-4 hand the pointer along with the frame. */
     public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        super.extractRenderState(g, mouseX, mouseY, partialTick);
+        draw(g, mouseX, mouseY, partialTick);
+    }
+
+    /** 26.4-snapshot-5 and later hand over the extractor, which carries the pointer itself. */
+    public void extractRenderState(GuiGraphicsExtractor g) {
+        draw(g, ScreenHooks.mouseX(g, 0), ScreenHooks.mouseY(g, 0), ScreenHooks.partialTicks(g, 0.0f));
+    }
+
+    private void draw(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        ScreenHooks.drawBackground(this, g, mouseX, mouseY, partialTick);
 
         long now = System.currentTimeMillis();
         if (savePending && now >= saveAt) {

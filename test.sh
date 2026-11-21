@@ -194,7 +194,7 @@ LINT="-Xlint:all,-deprecation,-serial,-removal,-restricted,-cast,-classfile,-dan
 # NowPlayingHud still printed "151 checks, 0 failed" while no jar could be built
 # (R26-1). Compile src/main the way build.sh does, and fail loudly.
 echo "== compiling the whole tree"
-CLIENT="$TC/mc-client-26.3.jar"
+CLIENT="${SMTCRAFT_MC_CLIENT:-$TC/mc-client-26.1.jar}"
 if [ ! -f "$CLIENT" ]; then
     echo "client jar missing: $CLIENT" >&2
     exit 2
@@ -212,6 +212,28 @@ if [ "${#MAIN[@]}" -eq 0 ]; then
 fi
 if ! "$JAVAC" -encoding UTF-8 --release 25 $LINT -cp "$TREE_CP" -d "$OUT/tree" "${MAIN[@]}"; then
     echo "FAIL src/main does not compile - the self test would have been green anyway" >&2
+    exit 1
+fi
+
+# The five shims (Keys, Widgets, ScreenHooks, CoverTexture, WheelWatch) are the only code
+# that differs between 26.1 and 26.4, and SelfTest cannot see them: it runs without the
+# game on its classpath. Probe them against the same client jar build.sh uses - a shim that
+# stops resolving is otherwise a silent downgrade (R28-9).
+echo "== probing the compatibility shims"
+SHIM_SRC="$WORK/src/test/java/org/yinyun/smtcraft/ShimProbe.java"
+if [ ! -f "$SHIM_SRC" ]; then
+    echo "shim probe missing: $SHIM_SRC" >&2
+    exit 1
+fi
+if ! "$JAVAC" -encoding UTF-8 --release 25 $LINT \
+        -cp "$(hostpath "$OUT/tree")$SEP$TREE_CP" -d "$OUT/shim" "$SHIM_SRC"; then
+    echo "FAIL the shim probe does not compile against the compile target" >&2
+    exit 1
+fi
+if ! "$JAVA" --enable-native-access=ALL-UNNAMED \
+        -cp "$(hostpath "$OUT/tree")$SEP$(hostpath "$OUT/shim")$SEP$TREE_CP" \
+        org.yinyun.smtcraft.ShimProbe; then
+    echo "FAIL the compatibility shims did not resolve on the compile target" >&2
     exit 1
 fi
 

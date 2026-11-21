@@ -9,9 +9,11 @@
 全部逻辑都在纯 Java 里：SMTC 走 COM/WinRT interop，MPRIS2 走 D-Bus，两者都通过
 **java.lang.foreign（FFM）直接调系统库**，不装辅助程序、不起外部进程、不联网中转。
 
-- 目标版本：Minecraft 26.x（开发使用 26.3）· Fabric Loader ≥ 0.16.0 · Java ≥ 25（客户端）
+- 目标版本：Minecraft **26.1 – 26.4**（26.4 含快照 1–10，同一个 jar 通吃）· Fabric Loader ≥ 0.16.0 · Fabric API ≥ 0.155.3 · Java ≥ 25（客户端）
 - 平台：Windows 10/11、Linux（需 `libdbus-1`）；其它平台能启动但 HUD 不显示
 - 许可：MIT（第三方片段 Apache-2.0，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）
+
+> **说明**：本 Mod 部分/全部由 AI 生成，所有改动均经人工审阅与实机验证后发布。
 
 ## 功能
 
@@ -50,18 +52,37 @@
 
 | 项目 | 版本 / 说明 |
 | --- | --- |
-| Minecraft | 26.x（26.x 客户端已去混淆，无需 Yarn 映射；开发使用 26.3） |
+| Minecraft | 26.1 / 26.1.1 / 26.1.2 / 26.2 / 26.3 / 26.4（含快照 1–10）；26.x 客户端已去混淆，无需 Yarn 映射 |
 | Fabric Loader | ≥ 0.16.0（开发使用 0.20.1） |
-| Fabric API | 对应 26.3 的版本（必需） |
+| Fabric API | ≥ 0.155.3（必需） |
 | Mod Menu | 可选，只影响「从模组列表进设置」这一个入口 |
-| Java | 客户端 ≥ 25（26.3 官方即 JDK 25） |
+| Java | 客户端 ≥ 25 |
 | Windows | 10 / 11，走 SMTC |
 | Linux | 需要 `libdbus-1`：Debian/Ubuntu `libdbus-1-3`、Arch `dbus`、Fedora `dbus-libs` |
 
+### 跨版本兼容
+
+26.1 到 26.4 之间有几处客户端 API 变了签名，同一个 jar 要覆盖整段，就不能只按一个版本写。做法是
+**编译对齐区间最旧的 26.1**，差异在运行期解析：各垫片先探这一版到底有哪个类 / 哪个方法，走到存在的
+那条路上，实在没有才降级。目前有七处：
+
+| 差异 | 26.1 – 26.4 的分布 | 垫片 |
+| --- | --- | --- |
+| 封面纹理注册 | `DynamicTexture` 到 snapshot-2；snapshot-3 起只剩 `TextureResources` + `TextureManager.register`；snapshot-8 起改 `ExternalTextureProvider` + `registerProvider` | `render/CoverTexture`（三条路按 direct → provider → dynamic 取第一条能解析的） |
+| HUD 渲染入口 | 26.1–26.3 收 `(extractor, DeltaTracker)`；26.4 只收 `(extractor)` | `render/NowPlayingHud`（两个重载都实现） |
+| 屏幕背景钩子 | 26.1–snapshot-4 是 `(extractor, mouseX, mouseY, partialTick)`；snapshot-5 起只收 extractor，指针改由 extractor 提供 | `gui/ScreenHooks` |
+| 控件可见性 | 26.1–snapshot-1 是 public 字段；snapshot-2 起 protected + `setVisible` | `gui/Widgets` |
+| 按键编号 | `InputConstants.isKeyDown` 在 26.1–26.2 收 `(Window, GLFW 键码)`，26.3 起收 `(SDL scancode)`；`KEY_F7` 在 26.1 是 296、26.3 是 64 | `util/Keys`（按名字反射读这一版声明的常量） |
+| 滚轮事件 | 26.1–26.2 走 GLFW 回调，26.3 起走 SDL 事件监视 | `util/WheelWatch` |
+| 鼠标坐标 | extractor 在 26.1 不带 `mouseX/mouseY` | `gui/ScreenHooks`（缺失时退回 0,0 并在日志里注明） |
+
+启动日志里有 `game api:` 与 `key codes:` 两行，就是这一版实际解析到的结果。前几处逐版本编译就能发现，
+后两处（HUD 入口、滚轮后端）只有真机启动才暴露——两版编译都合法，运行期才崩。
+
 ## 安装
 
-1. 在启动器里装 Fabric Loader（26.3）与对应版本的 Fabric API
-2. 把 `smtcraft-<version>.jar` 放进 `.minecraft/mods`（同一个模组只留一个版本）
+1. 在启动器里装 Fabric Loader（≥ 0.16.0）与 Fabric API ≥ 0.155.3
+2. 把 `smtcraft-<version>+mc26.1-26.4.jar` 放进 `.minecraft/mods`（同一个模组只留一个版本；文件名里的区间就是适用范围，26.4 的快照也用这一个）
 3. **启动器 JVM 参数加 `--enable-native-access=ALL-UNNAMED`（必做）**，老启动器写作
    `-J--enable-native-access=ALL-UNNAMED`；同时去掉 `--illegal-native-access=deny`。
    JDK 24+ 对 FFM 受限方法默认只警告，但部分启动器以 `deny` 启动；一旦被拒绝，
@@ -86,6 +107,7 @@
 三个键位都能在「选项 → 控制 → 按键设置」里改。设置界面底部显示当前读取状态（正在读取的曲目、
 来源应用、距上次采样毫秒数）与歌词状态（`searching` / `cached` / `no match` / `hit <曲名>`）；
 写入失败、配置损坏、媒体桥报错会以 `!` 前缀显示分类原因，具体堆栈在日志里。
+
 
 ## 配置
 
@@ -168,7 +190,7 @@
 ```
 toolchain/
 ├── jdk25/bin/{java,javac,jar}
-├── mc-client-26.3.jar                # 官方去混淆客户端 jar
+├── mc-client-26.1.jar                # 官方去混淆客户端 jar（编译对齐区间最旧版本）
 ├── fabric-loader-0.20.1.jar
 ├── modmenu-21.0.0.jar                # 硬编译依赖（ModMenuIntegration 实现其 API）
 ├── mc-libs/*.jar                     # 客户端 jar 的 libraries
@@ -177,9 +199,12 @@ toolchain/
 
 26.x 没有 Yarn / Intermediary 映射，所以**不经过 Loom、不 remap**：编译产物就是最终 jar。
 
-上面的文件都能从公开渠道拿到：`mc-client-26.3.jar` 就是启动器 `.minecraft/versions/26.3/` 下那个
+上面的文件都能从公开渠道拿到：`mc-client-26.1.jar` 就是启动器 `.minecraft/versions/26.1/` 下那个
 版本 jar（26.x 客户端未混淆），`fabric-loader` 与 `fabric-api` 模块来自 maven.fabricmc.net，
 Mod Menu 来自 Modrinth 或它的 maven，`mc-libs` 是客户端 jar 里 `libraries` 列出的库。
+
+编译目标故意取支持范围里**最旧**的 26.1：这样每处版本差异都是「旧版有、新版没了」，编译期就能
+暴露出来；要换目标时设 `SMTCRAFT_MC_CLIENT=<path to client.jar>`，两个脚本都认这个变量。
 
 ### 方式 A：build.sh（最短路径）
 
@@ -280,13 +305,15 @@ src/main/java/org/yinyun/smtcraft/
 ├── audio/MusicMuter.java       播放时静音游戏音乐
 ├── font/FontPack.java          本机字体 → 资源包 → 热重载
 ├── gui/SettingsScreen.java     游戏内设置界面（四标签页 + 滚动）
+├── gui/ScreenHooks.java        跨版本：屏幕背景钩子与指针坐标
+├── gui/Widgets.java            跨版本：控件可见性
 ├── media/                      MediaBridge 接口、按平台选择、空实现
 ├── mpris/                      D-Bus 绑定、MPRIS2 桥、Wire 解码、符号原型表
-├── render/                     HUD、歌词渲染、封面缓存、滚动与时钟
+├── render/                     HUD、歌词渲染、封面缓存与跨版本纹理注册、滚动与时钟
 ├── smtc/                       Windows SMTC 桥、歌词服务与三家接口客户端、格式解析
-└── util/                       Async、Budgets、ShutdownPlan、Watchdog、Errors
+└── util/                       Async、Budgets、ShutdownPlan、Watchdog、Errors、跨版本垫片（Keys/WheelWatch）
 src/main/resources/             fabric.mod.json、语言文件、图标
-src/test/java/                  SelfTest（离线行为断言）
+src/test/java/                  SelfTest（离线行为断言）、ShimProbe（兼容垫片探针）
 src/test/resources/             libdbus 原型文件（自测第二来源）
 build.sh / test.sh              无 Gradle 的直接构建与离线自测
 build.gradle                   等价的可选构建路径 + selfTest 任务
@@ -300,7 +327,15 @@ build.gradle                   等价的可选构建路径 + selfTest 任务
 - 三家歌词接口都不是官方接口，可能随时变化，见上一节的自修流程
 - 播放器发布周期长于 2.5 s 时，进度按最近一次真实步进外推，最多可能落后 2.4 s 再被追平
 - 开启跑马灯的歌词行在换行退场的那一帧，横向偏移偶有轻微跳变
+- 26.4 一侧的兼容层按快照 10 实测，快照之间接口仍在变动；换快照后先看日志的 `game api:` 一行
 - 仅当播放器把信息写进系统媒体会话时才可见（部分播放器默认关闭该功能）
+
+## 版本记录
+
+| 版本 | 变更 |
+| --- | --- |
+| **1.0.1** | 加入 26.1 至 26.4-snapshot-10 版本支持：一个 jar 通吃 26.1 / 26.1.1 / 26.1.2 / 26.2 / 26.3 / 26.4（含快照 1–10），Fabric API 下限降到 0.155.3。相对 1.0.0 另修正了兼容层的按键编号读取（按名字读 `InputConstants` 的常量，不再写死一套编号）与滚轮监视的安装判定。 |
+| 1.0.0 | 首个公开发布版本：HUD 与同步歌词、卡拉 OK 逐字填充、游戏内设置界面、Windows SMTC 与 Linux MPRIS2。 |
 
 ## 许可
 

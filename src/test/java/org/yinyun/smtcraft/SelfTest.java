@@ -72,6 +72,7 @@ public final class SelfTest {
         shutdownPlanKeepsItsOrder();
         savesBumpTheReloadGeneration();
         configProblemsAreClassified();
+        configClampsMatchTheSliders();
         lyricPositionNeverRewinds();
         smootherHoldsThroughAStall();
         smootherIgnoresAStallWhenLearning();
@@ -797,6 +798,15 @@ public final class SelfTest {
                         org.yinyun.smtcraft.util.Errors.describe(new IllegalStateException("   "))));
         check("describe tolerates a null throwable",
                 "none".equals(org.yinyun.smtcraft.util.Errors.describe(null)));
+        java.lang.reflect.InvocationTargetException wrapped =
+                new java.lang.reflect.InvocationTargetException(new IllegalStateException("denied"));
+        check("describe unwraps a reflection failure down to its cause",
+                "IllegalStateException: denied".equals(
+                        org.yinyun.smtcraft.util.Errors.describe(wrapped)));
+        check("describe unwraps a failed static initializer down to its cause",
+                "IllegalStateException: denied".equals(
+                        org.yinyun.smtcraft.util.Errors.describe(
+                                new ExceptionInInitializerError(new IllegalStateException("denied")))));
     }
 
     /**
@@ -1115,6 +1125,31 @@ public final class SelfTest {
         check("an empty box is not scrolled",
                 LyricScroll.followOffset(wide, wide, 0.0f) == 0.0f);
     }
+    /**
+     * The corner radius and the spin speed each have one range: the constants, which
+     * {@code normalise()} clamps to and the settings sliders are built from. Nothing asserted
+     * the clamps at all, so a range that drifted from its slider would only show up as a
+     * value the panel cannot reproduce (R27-2).
+     */
+    private static void configClampsMatchTheSliders() {
+        check("the corner range is ordered", SmtcConfig.MIN_CORNER_RADIUS < SmtcConfig.MAX_CORNER_RADIUS);
+        check("the spin range is ordered", SmtcConfig.MIN_VINYL_SPIN < SmtcConfig.MAX_VINYL_SPIN);
+        SmtcConfig high = new SmtcConfig();
+        high.cornerRadius = SmtcConfig.MAX_CORNER_RADIUS + 40;
+        high.vinylSpinSpeed = SmtcConfig.MAX_VINYL_SPIN + 300.0f;
+        high.normalise();
+        check("a corner above the range stops at the top",
+                high.cornerRadius == SmtcConfig.MAX_CORNER_RADIUS);
+        check("a spin above the range stops at the top", high.vinylSpinSpeed == SmtcConfig.MAX_VINYL_SPIN);
+        SmtcConfig low = new SmtcConfig();
+        low.cornerRadius = SmtcConfig.MIN_CORNER_RADIUS - 9;
+        low.vinylSpinSpeed = SmtcConfig.MIN_VINYL_SPIN - 12.0f;
+        low.normalise();
+        check("a corner below the range stops at the bottom",
+                low.cornerRadius == SmtcConfig.MIN_CORNER_RADIUS);
+        check("a spin below the range stops at the bottom", low.vinylSpinSpeed == SmtcConfig.MIN_VINYL_SPIN);
+    }
+
     private static void check(String what, boolean ok) {
         checks++;
         if (!ok) {

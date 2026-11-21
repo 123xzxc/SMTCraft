@@ -4,7 +4,6 @@ import com.mojang.blaze3d.platform.NativeImage;
 import org.yinyun.smtcraft.SmtcCraftClient;
 import org.yinyun.smtcraft.util.Errors;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.Identifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -193,10 +192,12 @@ public final class ArtworkCache {
     private static Identifier upload(String key, String hash, NativeImage image, boolean circular) {
         Identifier id = Identifier.fromNamespaceAndPath(SmtcCraftClient.MOD_ID,
                 "covers/" + sanitize(hash) + (circular ? "_vinyl" : ""));
-        DynamicTexture texture = new DynamicTexture(() -> "smtcraft cover " + hash, image);
-        Minecraft.getInstance().getTextureManager().register(id, texture);
-        LOG.debug("cover texture {} registered ({}x{}{})",
-                id, image.getWidth(), image.getHeight(), circular ? ", disc" : "");
+        if (!CoverTexture.register(id, image, "smtcraft cover " + hash)) {
+            // the image never reached the GPU, so the caller still owns it and closes it
+            throw new IllegalStateException("cannot publish the cover texture: " + CoverTexture.lastFailure());
+        }
+        LOG.debug("cover texture {} registered ({}x{}{}) through {}",
+                id, image.getWidth(), image.getHeight(), circular ? ", disc" : "", CoverTexture.mode());
         return id;
     }
 

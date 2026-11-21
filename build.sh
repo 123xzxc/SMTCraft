@@ -54,7 +54,17 @@ case "$(uname -s)" in
     hostpath() { printf '%s' "$1"; }
     ;;
 esac
-CP="$(hostpath "$TC/mc-client-26.3.jar")$SEP$(hostpath "$TC/fabric-loader-0.20.1.jar")"
+# The jar supports 26.1 and up and is therefore compiled against the oldest client
+# jar in that range: an API that exists there exists in every later build too, and
+# the four places where the range differs are resolved at runtime (see util/Keys,
+# gui/Widgets, gui/ScreenHooks and render/CoverTexture).
+MC_CLIENT="${SMTCRAFT_MC_CLIENT:-$TC/mc-client-26.1.jar}"
+if [ ! -f "$MC_CLIENT" ]; then
+  echo "client jar missing: $MC_CLIENT" >&2
+  echo "  copy the 26.1 client jar there, or set SMTCRAFT_MC_CLIENT=<path to client.jar>" >&2
+  exit 2
+fi
+CP="$(hostpath "$MC_CLIENT")$SEP$(hostpath "$TC/fabric-loader-0.20.1.jar")"
 for jar in "$TC"/mc-libs/*.jar "$TC"/apijars/META-INF/jars/*.jar "$TC"/modmenu-*.jar; do
   if [ -f "$jar" ]; then
     CP="$CP$SEP$(hostpath "$jar")"
@@ -88,7 +98,9 @@ cp "$HERE/LICENSE" "$OUT/classes/LICENSE_$NAME"
 # FFM needs native access; declaring it in the manifest means the mod runs
 # without an extra launcher flag (A22).
 printf 'Manifest-Version: 1.0\r\nEnable-Native-Access: ALL-UNNAMED\r\n\r\n' > "$OUT/MANIFEST.MF"
-"$JAR" --create --file "$STAGE/$NAME-$VER.jar" --manifest "$OUT/MANIFEST.MF" \
+# The file name states the range this one jar covers: 26.1 through 26.4.
+JARNAME="$NAME-$VER+mc26.1-26.4.jar"
+"$JAR" --create --file "$STAGE/$JARNAME" --manifest "$OUT/MANIFEST.MF" \
   -C "$OUT/classes" .
-cp "$STAGE/$NAME-$VER.jar" "$HERE/build/libs/$NAME-$VER.jar"
-echo "built     : build/libs/$NAME-$VER.jar ($(wc -c < "$HERE/build/libs/$NAME-$VER.jar") bytes)"
+cp "$STAGE/$JARNAME" "$HERE/build/libs/$JARNAME"
+echo "built     : build/libs/$JARNAME ($(wc -c < "$HERE/build/libs/$JARNAME") bytes)"

@@ -154,11 +154,11 @@ public final class FontPickerScreen extends Screen {
             int index = base + i;
             if (index < matches.size()) {
                 row.setMessage(Component.literal(matches.get(index).getFileName().toString()));
-                row.visible = true;
+                Widgets.visible(row, true);
                 row.active = true;
             } else {
                 row.setMessage(Component.empty());
-                row.visible = false;
+                Widgets.visible(row, false);
                 row.active = false;
             }
         }
@@ -180,9 +180,18 @@ public final class FontPickerScreen extends Screen {
         }
     }
 
-    @Override
+    /** 26.1 up to 26.4-snapshot-4 hand the pointer along with the frame. */
     public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        super.extractRenderState(g, mouseX, mouseY, partialTick);
+        draw(g, mouseX, mouseY, partialTick);
+    }
+
+    /** 26.4-snapshot-5 and later hand over the extractor, which carries the pointer itself. */
+    public void extractRenderState(GuiGraphicsExtractor g) {
+        draw(g, ScreenHooks.mouseX(g, 0), ScreenHooks.mouseY(g, 0), ScreenHooks.partialTicks(g, 0.0f));
+    }
+
+    private void draw(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        ScreenHooks.drawBackground(this, g, mouseX, mouseY, partialTick);
         g.centeredText(this.font, this.title.getString(), this.width / 2, 10, 0xFFFFFFFF);
         g.centeredText(this.font, Component.translatable(labelKey).getString(),
                 this.width / 2, this.height - 40, 0xFFB8BCC4);

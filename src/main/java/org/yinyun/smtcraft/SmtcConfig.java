@@ -130,7 +130,6 @@ public final class SmtcConfig {
     public static final int MIN_CORNER_RADIUS = 0;
     public static final int MAX_CORNER_RADIUS = 24;
 
-
     // --- audio -------------------------------------------------------------
     /** Silence vanilla background music while a SMTC track is playing. */
     public boolean muteGameMusic = true;

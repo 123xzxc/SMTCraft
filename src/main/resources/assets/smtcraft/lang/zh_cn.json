@@ -54,6 +54,7 @@
   "smtcraft.opt.show_reading": "第二行显示读音（罗马音／假名注音）",
   "key.smtcraft.offset": "歌词延迟调整（按住 + 滚轮，每格 50ms，Ctrl 归零）",
   "smtcraft.msg.offset": "本曲歌词延迟 %s ms",
+  "smtcraft.msg.wheel_off": "滚轮微调没能装上，只能用按键调整（原因已写入日志）",
   "smtcraft.opt.lyric_source": "歌词来源：%s",
   "smtcraft.source.netease": "网易云",
   "smtcraft.source.qq": "QQ 音乐",

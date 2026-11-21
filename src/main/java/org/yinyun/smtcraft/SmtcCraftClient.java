@@ -1,15 +1,17 @@
 package org.yinyun.smtcraft;
 
 import com.mojang.blaze3d.platform.InputConstants;
-import org.lwjgl.sdl.SDL_Event;
-import org.lwjgl.sdl.SDL_EventFilter;
-import org.lwjgl.sdl.SDLEvents;
 import org.yinyun.smtcraft.audio.MusicMuter;
 import org.yinyun.smtcraft.font.FontPack;
 import org.yinyun.smtcraft.gui.SettingsScreen;
 import org.yinyun.smtcraft.render.NowPlayingHud;
 import org.yinyun.smtcraft.smtc.LyricService;
 import org.yinyun.smtcraft.util.Errors;
+import org.yinyun.smtcraft.util.Keys;
+import org.yinyun.smtcraft.util.WheelWatch;
+import org.yinyun.smtcraft.gui.ScreenHooks;
+import org.yinyun.smtcraft.gui.Widgets;
+import org.yinyun.smtcraft.render.CoverTexture;
 import org.yinyun.smtcraft.media.MediaBridge;
 import org.yinyun.smtcraft.media.MediaBridges;
 import org.yinyun.smtcraft.smtc.TrackInfo;
@@ -88,9 +90,15 @@ public final class SmtcCraftClient implements ClientModInitializer {
     private KeyMapping settingsKey;
     private KeyMapping offsetKey;
     private NowPlayingHud hud;
-    /** Kept referenced on purpose: the native trampoline is freed with this object. */
-    private SDL_EventFilter scrollWatch;
+    /** True once the wheel watch is in place; on GLFW it can only be installed after the window exists. */
+    private boolean wheelWatch;
+    /** Install attempts, so a backend that never becomes ready does not cost a lookup per tick. */
+    private int wheelTries;
+    /** About ten seconds of ticks: enough for a slow world load, few enough to stop trying. */
+    private static final int WHEEL_TRIES = 200;
     private double wheelSteps;
+    /** Last seen "offset key plus Ctrl", so the reset fires on the press and not every tick. */
+    private boolean offsetCombo;
     /** Ticks to wait after start-up before the first resource-pack reload. */
     private int fontDelay = 60;
     /** Re-attempt spacing for a pack that is not applied yet (C4). */
@@ -105,9 +113,17 @@ public final class SmtcCraftClient implements ClientModInitializer {
     private static final int MAX_FONT_TRIES = 4;
     /** Tracks world joins, which reload resources and give a failed selection another go. */
     private boolean fontInWorld;
-    /** GLFW key numbers, the numbering InputConstants uses on every backend. */
-    private static final int KEY_LEFT_CONTROL = 341;
-    private static final int KEY_RIGHT_CONTROL = 345;
+    /**
+     * Key numbers are asked for by name and read off the running build ({@link Keys#key}).
+     * 26.1 declares 341/345/296 for Ctrl and F7 - GLFW key codes - while 26.3 declares
+     * 224/228/64 for the same constants, because it indexes the SDL keyboard-state buffer
+     * by scancode. A number compiled into this class would be right on one version and
+     * silently a different key on the rest, which is exactly what R28-1 caught. These
+     * fallbacks only matter on a build that stopped declaring the field.
+     */
+    private static final int FALLBACK_LCONTROL = 341;
+    private static final int FALLBACK_RCONTROL = 345;
+    private static final int FALLBACK_F7 = 296;
 
     public static SmtcCraftClient get() {
         return instance;
@@ -183,6 +199,15 @@ public final class SmtcCraftClient implements ClientModInitializer {
                 "key.smtcraft.offset",
                 InputConstants.getKey("key.keyboard.f7").getValue(),
                 category));
+
+        // One line says which of the four 26.1-26.4 differences this game build uses;
+        // without it a crash report from a snapshot says nothing about the version.
+        LOG.info("game api: cover={}, screen={}, widget={}, key={}, wheel={}",
+                CoverTexture.mode(), ScreenHooks.mode(), Widgets.mode(), Keys.mode(), WheelWatch.mode());
+        // The numbers differ per version (R28-1), so the log carries the ones in use.
+        LOG.info("key codes: F7={}, LCONTROL={}, RCONTROL={}",
+                Keys.key("KEY_F7", FALLBACK_F7), Keys.key("KEY_LCONTROL", FALLBACK_LCONTROL),
+                Keys.key("KEY_RCONTROL", FALLBACK_RCONTROL));
 
         hud = new NowPlayingHud(this);
         HudElementRegistry.addLast(
@@ -452,13 +477,20 @@ public final class SmtcCraftClient implements ClientModInitializer {
         return Math.min(cap, remaining(deadline));
     }
 
+    /**
+     * Ctrl, through the same shim the other keys use. The SDL modifier query that used to
+     * live here was a hard reference into {@code org.lwjgl.sdl}, which 26.1/26.2 do not
+     * ship — the entrypoint class failed to load on those versions before it ever ran.
+     */
     private static boolean controlDown() {
-        try {
-            return (org.lwjgl.sdl.SDLKeyboard.SDL_GetModState()
-                    & org.lwjgl.sdl.SDLKeycode.SDL_KMOD_CTRL) != 0;
-        } catch (Throwable unavailable) {
-            return InputConstants.isKeyDown(KEY_LEFT_CONTROL) || InputConstants.isKeyDown(KEY_RIGHT_CONTROL);
-        }
+        return Keys.isKeyDown(Keys.key("KEY_LCONTROL", FALLBACK_LCONTROL))
+                || Keys.isKeyDown(Keys.key("KEY_RCONTROL", FALLBACK_RCONTROL));
+    }
+
+    /** True while the offset key is held, through the mapping or, failing that, the raw state. */
+    private boolean offsetHeld() {
+        if (offsetKey != null && offsetKey.isDown()) return true;
+        return Keys.isKeyDown(Keys.key("KEY_F7", FALLBACK_F7));
     }
 
     /**
@@ -479,35 +511,44 @@ public final class SmtcCraftClient implements ClientModInitializer {
     }
 
     /**
-     * Watches SDL mouse-wheel events from the side: while the offset key is held,
-     * notches are accumulated here and applied on the next tick. Observing instead
-     * of consuming keeps the wheel working for the rest of the game.
+     * Watches mouse-wheel notches from the side: while the offset key is held they are
+     * accumulated here and applied on the next tick. Observing instead of consuming keeps
+     * the wheel working for the rest of the game. Which backend serves this is decided by
+     * {@link WheelWatch}; on GLFW the window has to exist first, so this retries.
      */
     private void installScrollWatch() {
-        if (scrollWatch != null) return;
-        try {
-            scrollWatch = SDL_EventFilter.create((userdata, event) -> {
-                if (offsetKey != null
-                        && SDL_Event.ntype(event) == SDLEvents.SDL_EVENT_MOUSE_WHEEL
-                        && offsetKey.isDown()) {
-                    float dy = SDL_Event.nwheel(event).y();
-                    if (dy != 0.0f) {
-                        synchronized (this) {
-                            wheelSteps += dy;
-                        }
+        if (wheelWatch) return;
+        wheelWatch = WheelWatch.install(
+                this::offsetHeld,
+                steps -> {
+                    synchronized (this) {
+                        wheelSteps += steps;
                     }
-                }
-                return true;
-            });
-            SDLEvents.SDL_AddEventWatch(scrollWatch, 0L);
-        } catch (Throwable t) {
-            org.slf4j.LoggerFactory.getLogger(MOD_ID)
-                    .warn("mouse wheel watch unavailable ({})", Errors.describe(t));
+                });
+        if (wheelWatch) {
+            LOG.info("mouse wheel watch: {}", WheelWatch.mode());
         }
     }
 
     private void onEndTick(Minecraft mc) {
         if (bridge == null) return;
+        // GLFW only hands out a window handle once the window exists, and on 26.4 the SDL
+        // event watch refused the first attempt outright, so a failed install is retried for
+        // a while instead of being written off: ten seconds covers a slow world load.
+        if (!wheelWatch && wheelTries < WHEEL_TRIES) {
+            wheelTries++;
+            installScrollWatch();
+            if (!wheelWatch && wheelTries == WHEEL_TRIES) {
+                LOG.warn("mouse wheel watch never installed ({}): {}",
+                        WheelWatch.mode(), WheelWatch.reason());
+                // A log line is not where a player looks: without the wheel the offset
+                // keys look broken rather than absent (R28-5).
+                if (hud != null) hud.notice(Component.translatable("smtcraft.msg.wheel_off").getString());
+            }
+        } else if (wheelWatch) {
+            // the game registers its own scroll callback on window setup; ours has to win
+            WheelWatch.keepAlive();
+        }
         // Stage timing: a stalled tick has to name its own culprit, otherwise the
         // "the game freezes for a moment when a song starts" reports are unactionable.
         long tStart = System.nanoTime();
@@ -538,9 +579,12 @@ public final class SmtcCraftClient implements ClientModInitializer {
             }
         }
 
-        while (offsetKey != null && offsetKey.consumeClick()) {
-            if (controlDown()) resetLyricOffset();
-        }
+        // A rising edge rather than consumeClick(): the click flag is set by the game's own
+        // key dispatch, so depending on it made Ctrl+F7 a no-op whenever the modifier could
+        // not be read. Holding the pair resets once, not once per tick.
+        boolean offsetCombo = offsetHeld() && controlDown();
+        if (offsetCombo && !this.offsetCombo) resetLyricOffset();
+        this.offsetCombo = offsetCombo;
 
         double steps;
         synchronized (this) {

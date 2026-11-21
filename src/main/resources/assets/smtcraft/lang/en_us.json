@@ -54,6 +54,7 @@
   "smtcraft.opt.show_reading": "Show reading (romaji / kana) in the second line",
   "key.smtcraft.offset": "Nudge lyric offset (hold + scroll, 50 ms per notch, Ctrl resets)",
   "smtcraft.msg.offset": "Lyric offset for this song: %s ms",
+  "smtcraft.msg.wheel_off": "Wheel fine-tune could not be installed; use the keys (the reason is in the log)",
   "smtcraft.opt.lyric_source": "Lyric source: %s",
   "smtcraft.source.netease": "NetEase",
   "smtcraft.source.qq": "QQ Music",

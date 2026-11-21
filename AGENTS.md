@@ -4,7 +4,7 @@
 
 ## 这是什么
 
-Minecraft 26.x / Fabric 客户端模组：把系统当前播放的曲目与同步歌词画进 HUD。曲目信息来自
+Minecraft 26.1–26.4（含 26.4 快照 1–10）/ Fabric 客户端模组：把系统当前播放的曲目与同步歌词画进 HUD。曲目信息来自
 Windows SMTC 或 Linux MPRIS2，两者都用 `java.lang.foreign` 直接调系统库；歌词来自酷狗 / 网易云 /
 QQ 音乐的公开接口。**没有服务端组件，没有账号，没有密钥。**
 
@@ -15,11 +15,14 @@ QQ 音乐的公开接口。**没有服务端组件，没有账号，没有密钥
 ## 构建与测试
 
 ```bash
-./build.sh /path/to/toolchain     # javac + jar，产物 build/libs/smtcraft-<version>.jar
+./build.sh /path/to/toolchain     # javac + jar，产物 build/libs/smtcraft-<version>+mc26.1-26.4.jar
 ./test.sh  /path/to/toolchain     # 整树编译 + 源码护栏 + 离线行为断言
 ```
 
 - 工具链目录布局见 README「从源码构建」；版本号与依赖版本在 `gradle.properties`
+- 编译目标固定为支持区间里**最旧的 26.1**（`SMTCRAFT_MC_CLIENT` 可覆盖）。新版独有的 API 不要直接用：
+  加一个垫片类（见 `util/Keys`、`gui/ScreenHooks`、`render/CoverTexture`），在运行期解析，并让
+  `src/test/java/.../ShimProbe` 在编译目标的客户端 jar 上断言它能解析到
 - Windows 上必须传 **Windows 形式**的路径（`C:/...`）。传 MSYS 形式（`/c/...`）会让
   `cygpath` 拼出坏 classpath，报出成百条「找不到符号 com.google.gson」
 - `build.sh` 的类文件暂存在工具链旁边的 `smtc-build/`（Windows「受控文件夹访问」不允许
@@ -49,6 +52,7 @@ QQ 音乐的公开接口。**没有服务端组件，没有账号，没有密钥
 - 每条断言都要能在实现写错时**变红**：写完先故意改坏一处实现、确认对应断言失败，再还原。
   没验证过会红的断言等于没有断言
 - 护栏（`test.sh` 里的 awk 规则）必须配一个反向样本文件；改护栏时样本与断言一起改
+- 兼容垫片不止要编译过：`test.sh` 会用编译目标的客户端 jar 跑 `ShimProbe`，解析不到就红
 - 时间相关的断言不要 `sleep` 固定值，轮询到条件成立并设上限
 
 ## 提交前

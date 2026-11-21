@@ -28,6 +28,9 @@ import org.slf4j.LoggerFactory;
  * are separate scales applied inside that space.</p>
  */
 public final class NowPlayingHud implements HudElement {
+
+    /** Last frame's clock, for the versions whose HUD entry point carries no tracker. */
+    private long lastNanos;
     private static final int DESIGN_W = 208;
     /** Hard ceiling for the adaptive width so a 120 glyph title does not fill the screen. */
     private static final int MAX_W = 470;
@@ -113,8 +116,23 @@ public final class NowPlayingHud implements HudElement {
         return fit >= MIN_FIT ? fit : Math.max(HARD_MIN_FIT, fit);
     }
 
-    @Override
+    /**
+     * 26.4 dropped the tracker argument from {@code HudElement}, so this entry point is the
+     * abstract one there; 26.1–26.3 hand the tracker in and never call this. Both are
+     * concrete, and no {@code @Override} is written: only one of them exists per version,
+     * and an inherited abstract method that only one side declares is an
+     * {@code AbstractMethodError} at the first frame in the world.
+     */
+    public void extractRenderState(GuiGraphicsExtractor g) {
+        drawHud(g, null);
+    }
+
     public void extractRenderState(GuiGraphicsExtractor g, DeltaTracker delta) {
+        drawHud(g, delta);
+    }
+
+    /** The body both entry points share. {@code delta} is null where the game has none. */
+    private void drawHud(GuiGraphicsExtractor g, DeltaTracker delta) {
         SmtcConfig cfg = mod.config();
         if (cfg == null || !cfg.enabled) return;
 
@@ -124,7 +142,7 @@ public final class NowPlayingHud implements HudElement {
 
         // time keeps running while the panel is hidden, so the marquee phase and
         // the disc angle do not jump when it reappears (C13)
-        float step = deltaSeconds(delta);
+        float step = delta == null ? wallStep() : deltaSeconds(delta);
         clock += step;
 
         MediaBridge bridge = mod.bridge();
@@ -666,6 +684,20 @@ public final class NowPlayingHud implements HudElement {
         if (mc == null) return null;
         if (cfg != null && "unicode".equals(cfg.lyricFontMode)) return mc.fontFilterFishy;
         return mc.font;
+    }
+
+    /**
+     * Frame time measured here, for the versions whose HUD gets no tracker (26.4). Clamped
+     * the same way as {@link #deltaSeconds}, so a stalled frame cannot make the marquee jump.
+     */
+    private float wallStep() {
+        long now = System.nanoTime();
+        long previous = lastNanos;
+        lastNanos = now;
+        if (previous == 0L) return 0.05f;
+        float d = (now - previous) / 1_000_000_000.0f;
+        if (d <= 0.0f || d > 1.0f) return 0.05f;
+        return d;
     }
 
     private static float deltaSeconds(DeltaTracker delta) {

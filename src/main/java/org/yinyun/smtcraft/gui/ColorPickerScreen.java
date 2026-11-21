@@ -176,9 +176,18 @@ public final class ColorPickerScreen extends Screen {
         if (this.minecraft != null) this.minecraft.setScreenAndShow(parent);
     }
 
-    @Override
+    /** 26.1 up to 26.4-snapshot-4 hand the pointer along with the frame. */
     public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        super.extractRenderState(g, mouseX, mouseY, partialTick);
+        draw(g, mouseX, mouseY, partialTick);
+    }
+
+    /** 26.4-snapshot-5 and later hand over the extractor, which carries the pointer itself. */
+    public void extractRenderState(GuiGraphicsExtractor g) {
+        draw(g, ScreenHooks.mouseX(g, 0), ScreenHooks.mouseY(g, 0), ScreenHooks.partialTicks(g, 0.0f));
+    }
+
+    private void draw(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        ScreenHooks.drawBackground(this, g, mouseX, mouseY, partialTick);
         g.centeredText(this.font, Component.translatable(labelKey).getString(), this.width / 2, 20, 0xFFFFFFFF);
         g.centeredText(this.font, Component.translatable("smtcraft.picker.hint").getString(),
                 this.width / 2, 38, 0xFF9FB2C8);

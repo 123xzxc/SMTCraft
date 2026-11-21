@@ -26,11 +26,35 @@ public final class Errors {
      */
     public static String describe(Throwable t) {
         if (t == null) return "none";
+        t = unwrap(t);
         String message = t.getMessage();
         return message == null || message.isBlank()
                 ? t.getClass().getSimpleName()
                 : t.getClass().getSimpleName() + ": " + message;
     }
+    /**
+     * Reflection hands back the real failure one layer down: every {@code Method.invoke}
+     * wraps it in an {@code InvocationTargetException} whose own message is the inner
+     * class name at best, and a static initializer that throws arrives as an
+     * {@code ExceptionInInitializerError} whose message is {@code null}. Describing the
+     * wrapper is how a log line ends up saying "InvocationTargetException" and nothing
+     * else — which is exactly what the SDL wheel watch reported on 26.4.
+     */
+    private static Throwable unwrap(Throwable t) {
+        Throwable current = t;
+        for (int depth = 0; depth < 8 && current != null; depth++) {
+            if (current instanceof java.lang.reflect.InvocationTargetException wrapper
+                    && wrapper.getTargetException() != null) {
+                current = wrapper.getTargetException();
+            } else if (current instanceof ExceptionInInitializerError init && init.getCause() != null) {
+                current = init.getCause();
+            } else {
+                return current;
+            }
+        }
+        return current;
+    }
+
     /**
      * The same description, wrapped in an exception so it can cross a layer that
      * only declares {@code IllegalStateException}. One that already is one is

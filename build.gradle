@@ -17,8 +17,8 @@ base {
 // the game jar and its libraries.
 //
 // Point -PtoolchainDir at a directory holding:
-//   mc-client-26.3.jar, fabric-loader-0.20.1.jar,
-//   mc-libs/*.jar, apijars/META-INF/jars/*.jar   (extracted fabric-api modules)
+//   mc-client-26.1.jar, fabric-loader-0.20.1.jar,   (26.1 is the compile target:
+//   mc-libs/*.jar, apijars/META-INF/jars/*.jar   the oldest version in range)
 // ---------------------------------------------------------------------------
 // Windows Defender's Controlled Folder Access blocks java.exe from creating
 // directories under a user profile's Downloads folder, which breaks any Gradle
