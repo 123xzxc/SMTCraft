@@ -45,8 +45,15 @@ public final class LyricService {
     private static final long CACHE_TTL_MS = 120L * 24L * 60L * 60L * 1000L;
     /** Minimum score for a search hit to be trusted. */
     private static final int ACCEPT_SCORE = SongMatch.ACCEPT;
-    /** Cached sheets from an older matcher are dropped, they may be the wrong song. */
-    private static final int CACHE_VERSION = 4;
+    /** Hits asked of a provider per query; the candidate cap scales with it. */
+    private static final int PER_QUERY = 8;
+    /**
+     * Cached sheets from an older matcher are dropped, they may be the wrong song.
+     * 5: the matcher started comparing edition marks, so a sheet cached before that
+     * may belong to another cut of the same title (a remix filed under the original,
+     * or the original under a remix).
+     */
+    private static final int CACHE_VERSION = 5;
     /**
      * Wall-clock budget for <em>one song</em>, retries included: providers answer in
      * a second or two when they know the track, and a silent one must not leave the
@@ -136,7 +143,7 @@ public final class LyricService {
      *
      * <p>The four actions before them are non-blocking, so a caller that ran out
      * of shutdown budget still gets the interrupt and the queue drain; it just
-     * does not wait 3.5 s on top of the budget (R9-1).</p>
+     * does not wait 3.5 s on top of the budget (AUDIT-91).</p>
      */
     public void close(long budgetMs) {
         running = false;
@@ -149,7 +156,7 @@ public final class LyricService {
         // alive for an extra second on quit and lets it touch a closed cache
         // Given in order rather than split down the middle: an even split handed
         // the join 1.75 s against the 2 s the javadoc above promises, on every
-        // normal exit rather than in the worst case (R10-2).
+        // normal exit rather than in the worst case (AUDIT-10-2).
         long join = Math.max(Budgets.MIN_WAIT_MS, Math.min(budgetMs, Budgets.LYRICS_JOIN_MS));
         long drain = Math.max(Budgets.MIN_WAIT_MS, Math.min(budgetMs - join, Budgets.LYRICS_DRAIN_MS));
         try {
@@ -421,6 +428,17 @@ public final class LyricService {
         Files.createDirectories(cacheDir);
         Path file = cacheDir.resolve(hash(key) + ".json");
         CacheFile cached = readCache(file);
+        if (cached != null && !cached.song.isBlank()
+                && !SongMatch.sameEdition(info.title(), cached.song)) {
+            // Same key, another recording: the key is built from the title, so an
+            // older matcher could file a remix's sheet here. It cannot be reused.
+            try {
+                Files.deleteIfExists(file);
+            } catch (Exception ignored) {
+                // read-only cache dir: the entry is simply ignored
+            }
+            cached = null;
+        }
         long now = System.currentTimeMillis();
         // A line-level sheet is only a fallback: keep looking for a provider that
         // carries real syllable timings, which is what the karaoke sweep needs.
@@ -725,7 +743,15 @@ public final class LyricService {
         note("kugou: searching");
         // The lyric endpoint only answers with the catalogue hash in hand: a bare
         // keyword search misses most Japanese / non-mainland titles entirely.
-        String title = bare(info.title());
+        // The endpoint is literal about editions: asking for "Euphoria" answers with
+        // the plain cut, so the full title is tried first and the bare one is only a
+        // fallback (Kugou files "[US40 Remix]" entries under their own names).
+        List<String> names = new ArrayList<>();
+        String full = info.title() == null ? "" : info.title().trim();
+        if (!full.isEmpty()) names.add(full);
+        String bareTitle = bare(info.title());
+        if (!bareTitle.isEmpty() && !bareTitle.equalsIgnoreCase(full)) names.add(bareTitle);
+        String title = names.isEmpty() ? "" : names.get(0);
         String hash = "";
         for (String q : SongMatch.queries(info)) {
             if (q.isBlank()) continue;
@@ -748,16 +774,22 @@ public final class LyricService {
         List<KugouClient.Candidate> found = new ArrayList<>();
         if (!hash.isEmpty()) {
             try {
-                found = kugou.searchByHash(title, info.durationMs(), hash);
+                found = new ArrayList<>(kugou.searchByHash(title, info.durationMs(), hash));
             } catch (Exception e) {
                 LOG.warn("kugou hash search failed: {}", Errors.describe(e));
             }
         }
-        if (found.isEmpty()) {
+        // "Found something" is not "found the song": with the edition gate on, an answer
+        // made of other cuts is the ordinary case, and stopping there dropped the song
+        // while the next name could still have answered (AUDIT-33-3).
+        for (String name : names) {
+            if (bestCandidateScore(found, info) >= ACCEPT_SCORE) break;
             try {
-                found = kugou.search(title, info.durationMs());
+                for (KugouClient.Candidate c : kugou.search(name, info.durationMs())) {
+                    if (!found.contains(c)) found.add(c);
+                }
             } catch (Exception e) {
-                LOG.warn("kugou keyword search failed: {}", Errors.describe(e));
+                LOG.warn("kugou keyword search '{}' failed: {}", name, Errors.describe(e));
             }
         }
 
@@ -828,36 +860,43 @@ public final class LyricService {
      */
     private List<Hit> hitsNetease(TrackInfo info) throws Exception {
         Map<String, Hit> out = new LinkedHashMap<>();
-        for (String q : SongMatch.queries(info)) {
+        List<String> queries = SongMatch.queries(info);
+        // Eight hits per query, so the cap has to scale with the list length: a fixed 24
+        // is exactly "the first three queries" and silently dropped the untouched title
+        // whenever an album added a fourth one (AUDIT-33-2).
+        int cap = queries.size() * PER_QUERY;
+        for (String q : queries) {
             if (q.isBlank()) continue;
             // one rejected query (a 503 page, an HTML error body) must not kill the
             // whole provider: the next variant often still answers
             try {
-                for (NetEaseClient.Song s : netease.search(q, 8)) {
+                for (NetEaseClient.Song s : netease.search(q, PER_QUERY)) {
                     out.putIfAbsent(s.id() + ":" + s.name(), new Hit(Long.toString(s.id()), "",
                             s.name(), s.artists(), s.durationMs()));
                 }
             } catch (Exception e) {
                 LOG.warn("netease search '{}' failed: {}", q, Errors.describe(e));
             }
-            if (out.size() >= 24) break;
+            if (out.size() >= cap) break;
         }
         return List.copyOf(out.values());
     }
 
     private List<Hit> hitsQq(TrackInfo info) throws Exception {
         Map<String, Hit> out = new LinkedHashMap<>();
-        for (String q : SongMatch.queries(info)) {
+        List<String> queries = SongMatch.queries(info);
+        int cap = queries.size() * PER_QUERY;   // see hitsNetease
+        for (String q : queries) {
             if (q.isBlank()) continue;
             try {
-                for (QQMusicClient.Song s : qq.search(q, 8)) {
+                for (QQMusicClient.Song s : qq.search(q, PER_QUERY)) {
                     out.putIfAbsent(s.id() + ":" + s.name(), new Hit(s.id(), s.mid(), s.name(),
                             s.artists(), s.durationMs()));
                 }
             } catch (Exception e) {
                 LOG.warn("qq search '{}' failed: {}", q, Errors.describe(e));
             }
-            if (out.size() >= 24) break;
+            if (out.size() >= cap) break;
         }
         return List.copyOf(out.values());
     }
@@ -879,6 +918,16 @@ public final class LyricService {
 
     /** A search result normalised across providers. */
     private record Hit(String id, String mid, String name, String artists, long durationMs) {}
+
+    /** The best score any candidate of {@code found} reaches, for "is there anything usable". */
+    private int bestCandidateScore(List<KugouClient.Candidate> found, TrackInfo info) {
+        int best = Integer.MIN_VALUE;
+        for (KugouClient.Candidate c : found) {
+            int score = score(new Hit(c.id(), "", c.song(), c.singer(), c.durationMs()), info);
+            if (score > best) best = score;
+        }
+        return best;
+    }
 
     private static String query(TrackInfo info) {
         List<String> queries = SongMatch.queries(info);

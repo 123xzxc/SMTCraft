@@ -69,7 +69,7 @@ public final class CoverTexture {
      * the caller still owns it and is expected to close it.
      *
      * <p>False covers two different things — no API on this build, and an upload that threw — so
-     * the reason travels in {@link #lastFailure()} instead of being guessed by the caller (R28-7).</p>
+     * the reason travels in {@link #lastFailure()} instead of being guessed by the caller (AUDIT-28-7).</p>
      */
     public static boolean register(Identifier id, NativeImage image, String label) {
         Plan chosen = plan();

@@ -6,7 +6,7 @@ package org.yinyun.smtcraft.util;
  * <p>Two constants that described the same budget were picked independently and
  * contradicted each other within one round of edits: the media bridge promised
  * itself a 10.5 s wait, the client gave the whole sequence 8 s, and the bridge —
- * being the last step — got the leftovers (R8-1). The next round showed the same
+ * being the last step — got the leftovers (AUDIT-81). The next round showed the same
  * arithmetic failing one level down, with a literal {@code 2_000L} in the client
  * and a third of the budget left outside the sum (R9-1, R9-4).</p>
  *
@@ -15,7 +15,7 @@ package org.yinyun.smtcraft.util;
  * stopping the lanes, and the lyric worker's two bounded waits. Anything that
  * is not in the sum will eventually be forgotten by it — the last literal
  * ({@code Async.shutdown}'s 3 s) was, and it came out of the final step
- * (R10-1). Nothing in this file is a number that only one call site knows.</p>
+ * (AUDIT-10-1). Nothing in this file is a number that only one call site knows.</p>
  *
  * <p>Pure: no Minecraft, no I/O, so the offline self test can assert the sum.</p>
  */
@@ -50,7 +50,7 @@ public final class Budgets {
      * a shutdown meaning outside this file, and it disagreed with
      * {@link #DRAIN_MS} (2 000 vs 1 500) for what looks like the same thing —
      * two numbers for one idea is how the earlier rounds lost track of the sum
-     * (R13-2).
+     * (AUDIT-13-2).
      */
     public static final long ASYNC_DRAIN_MS = 1_500L;
 
@@ -59,7 +59,7 @@ public final class Budgets {
      * It was the last literal left in the client, and being outside the sum it
      * was silently taken from the step after it — the lyric worker got 250 ms
      * for its join in the worst case, which is exactly the case that comment
-     * describes as needing a second (R10-1).
+     * describes as needing a second (AUDIT-10-1).
      */
     public static final long ASYNC_SHUTDOWN_MS = 3_000L;
 
@@ -72,16 +72,16 @@ public final class Budgets {
     /**
      * {@code LyricService#close} waits twice: one worker join plus the probe pool
      * drain. It used to sit outside the budget entirely, which put the real worst
-     * case at about 19 s against a 14.5 s budget (R9-1). The two parts are named
+     * case at about 19 s against a 14.5 s budget (AUDIT-91). The two parts are named
      * because splitting the total in half handed the join 1.75 s instead of the
-     * 2 s its own javadoc promises, on every normal exit (R10-2).
+     * 2 s its own javadoc promises, on every normal exit (AUDIT-10-2).
      */
     public static final long LYRICS_CLOSE_MS = LYRICS_JOIN_MS + LYRICS_DRAIN_MS;
 
     /**
      * Every wait derived from this class goes through a floor of one millisecond:
      * {@code Thread.join(0)} waits <em>forever</em>, so a budget that ran out
-     * would turn the fastest exit path into a hang (R9-2).
+     * would turn the fastest exit path into a hang (AUDIT-92).
      */
     public static final long MIN_WAIT_MS = 1L;
 
@@ -89,7 +89,7 @@ public final class Budgets {
      * How much of {@link #DRAIN_MS} is still owed after a drain already ran for
      * {@code spentMs}. The early drain before the config write and the {@code DRAIN}
      * step share one budget; a boolean saying "the drain ran" made the slow path pay
-     * twice, so the step asks what is left instead of whether it happened (R19-1).
+     * twice, so the step asks what is left instead of whether it happened (AUDIT-19-1).
      * Never negative — a drain that overran owes nothing.
      */
     public static long remainingDrain(long spentMs) {
@@ -107,7 +107,7 @@ public final class Budgets {
      * Applied on top of {@link #SHUTDOWN_MS} before the watchdog halts the
      * process. The watchdog has to outlive the sequence so that the normal path
      * wins the race and interrupts it; a second or two covers scheduling noise
-     * without making an honest exit wait for it (R13-1). Deliberately
+     * without making an honest exit wait for it (AUDIT-13-1). Deliberately
      * <em>not</em> part of the sum: the sum says how long the steps may take, this
      * says how long after that the process stops being trusted.
      */
@@ -117,7 +117,7 @@ public final class Budgets {
      * Ceiling for {@link #WATCHDOG_GRACE_MS}. The point of a grace is that an
      * honest exit does not notice it; a grace that drifts up to the whole budget
      * would add twenty seconds to every slow exit while still passing a
-     * "greater than zero, smaller than the budget" assertion (R14-3). The self
+     * "greater than zero, smaller than the budget" assertion (AUDIT-14-3). The self
      * test checks the ceiling, so this is the side that can actually fail.
      */
     public static final long WATCHDOG_GRACE_MAX_MS = 3_000L;

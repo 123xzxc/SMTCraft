@@ -49,6 +49,8 @@ public final class Theme {
         if (!cfg.isCustom("dimTextColor")) cfg.dimTextColor = preset.dim();
         if (!cfg.isCustom("lyricColor")) cfg.lyricColor = preset.text();
         if (!cfg.isCustom("karaokeColor")) cfg.karaokeColor = preset.accent();
+        if (!cfg.isCustom("translationColor")) cfg.translationColor = preset.text();
+        if (!cfg.isCustom("candidateColor")) cfg.candidateColor = preset.dim();
         if (!cfg.isCustom("backgroundOpacity")) cfg.backgroundOpacity = preset.opacity();
     }
 

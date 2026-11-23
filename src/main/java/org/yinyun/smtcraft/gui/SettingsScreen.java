@@ -8,19 +8,26 @@ import org.yinyun.smtcraft.render.Theme;
 import org.yinyun.smtcraft.smtc.LyricProvider;
 import org.yinyun.smtcraft.smtc.LyricService;
 import org.yinyun.smtcraft.media.MediaBridge;
+import org.yinyun.smtcraft.util.Errors;
+import org.yinyun.smtcraft.util.UiScale;
+import org.yinyun.smtcraft.util.UpdateCheck;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.ConfirmLinkScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.FontDescription;
 import net.minecraft.network.chat.Style;
 import net.minecraft.resources.Identifier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.net.URI;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -38,16 +45,18 @@ import java.util.function.Supplier;
  * <p>Every control writes straight into the config object and saves it, so the
  * HUD updates on the next frame and the JSON on disk stays authoritative.</p>
  */
-public final class SettingsScreen extends Screen {
+public final class SettingsScreen extends ScaledScreen {
+    private static final Logger LOG = LoggerFactory.getLogger("smtcraft");
     private static final String[] ANCHORS = {"top-left", "top-right", "bottom-left", "bottom-right", "center"};
     private static final String[] FONT_MODES = {"default", "unicode", "custom", "system"};
     private static final String[][] TABS = {
             {"smtcraft.tab.display", "display"},
             {"smtcraft.tab.lyrics", "lyrics"},
             {"smtcraft.tab.theme", "theme"},
-            {"smtcraft.tab.fonts", "fonts"}};
+            {"smtcraft.tab.fonts", "fonts"},
+            {"smtcraft.tab.about", "about"}};
 
-    private static final int TAB = 4;
+    private static final int TAB = 5;
 
     private final SmtcCraftClient mod;
     private final SmtcConfig cfg;
@@ -65,6 +74,9 @@ public final class SettingsScreen extends Screen {
     private Button sourceButton;
     private Button themeButton;
     private Button clearButton;
+    private Button updateButton;
+    /** Stamp of the release-check answer the button label was built for. */
+    private long aboutStamp = -1L;
     private int clearedFiles = -1;
     private long clearedAt;
     /** True when the last clear only dropped the song on screen. */
@@ -85,7 +97,7 @@ public final class SettingsScreen extends Screen {
     private final List<SlotPreview> basePreviews = new ArrayList<>();
     private int scroll;
     private int maxScroll;
-    /** True while the scrollbar thumb is being dragged (R7-5). */
+    /** True while the scrollbar thumb is being dragged (AUDIT-75). */
     private boolean draggingBar;
     /** Right-edge gutter, so the bar cannot cover the widest control's right end. */
     private static final int BAR_GUTTER = 6;
@@ -117,15 +129,18 @@ public final class SettingsScreen extends Screen {
         scroll = 0;
         // Minecraft calls init() again on the same instance when the window
         // resizes; a release event that lands elsewhere would otherwise leave the
-        // page stuck in "dragging" and swallow every later drag (R8-4).
+        // page stuck in "dragging" and swallow every later drag (AUDIT-84).
         draggingBar = false;
         anchorButton = null;
         fontModeButton = null;
         themeButton = null;
         fontIdBox = null;
 
-        contentWidth = Math.min(this.width - 24, 340);
-        contentLeft = (this.width - contentWidth) / 2;
+        // the player's GUI scale is resolved once per rebuild: every length below is in the
+        // pixels this page was drawn for, and the pose scales them on the way out (AUDIT-36-1)
+        refreshUi(cfg.followGuiScale);
+        contentWidth = Math.min(vw() - 24, 340);
+        contentLeft = (vw() - contentWidth) / 2;
 
         final int gap = 6;
         final int colW = (contentWidth - gap) / 2;
@@ -149,6 +164,7 @@ public final class SettingsScreen extends Screen {
             case 1 -> layoutLyricsTab(x0, x1, colW, gap);
             case 2 -> layoutThemeTab(x0, x1, colW, gap);
             case 3 -> layoutFontsTab(x0, colW, gap);
+            case 4 -> layoutAboutTab(x0, colW, gap);
             default -> layoutDisplayTab(x0, x1, colW, gap);
         }
 
@@ -157,31 +173,30 @@ public final class SettingsScreen extends Screen {
         building = false;
     }
 
-    /** Smallest row pitch the 9 px font still fits in, header and footer included. */
-    private static final int MIN_STEP = 13;
-    /** Content starts under the tab row and ends above the status line. */
+    /**
+     * Readable row pitch: the scale 2 page has always drawn its rows at 20 px with a
+     * couple of px between them, and a smaller pitch squeezes the labels into each other
+     * until the tab reads as one grey block (C1, R36).
+     */
+    private static final int MIN_STEP = 22;
+    /** Content starts under the tab row and ends above the two status lines. */
     private static final int CONTENT_TOP = 40;
-    private static final int CONTENT_BOTTOM_MARGIN = 22;
-
-    /** Last-resort row pitch: cramped, but still clickable. */
-    private static final int MIN_TIGHT_STEP = 10;
+    private static final int CONTENT_BOTTOM_MARGIN = 40;
 
     /**
-     * Row geometry that fits {@code rows} rows into the window.
+     * Row geometry for {@code rows} rows.
      *
-     * <p>The old version kept a 20 px floor and only gave up below it, so at GUI
-     * scale 4 or in a small window the last rows were pushed off the screen with
-     * no way to reach them (C1). There is nothing below 13 px that still fits the
-     * font, and every tab is laid out to fit above that floor.</p>
+     * <p>It used to shrink the pitch until every row fitted on screen, down to a 10 px
+     * last resort: in a short window that is what "the settings are squeezed together"
+     * means, because the font is 9 px tall and the rows end up three px apart. The
+     * height is not something this method can buy its way out of - so it no longer
+     * tries: the pitch stays readable and the surplus scrolls (the page already keeps a
+     * scroll offset, a bar and a wheel handler for exactly this).</p>
      */
     private int step(int rows, int max) {
-        int available = Math.max(0, this.height - contentTop() - contentBottom());
+        int available = Math.max(0, vh() - contentTop() - contentBottom());
         int fit = available / Math.max(1, rows);
-        int chosen = Math.min(max, fit);
-        // 768p at GUI scale 4 leaves 192 px, and fourteen rows at the 13 px floor need
-        // 244 px. Squeezing the margins and allowing a 10 px row keeps every row on
-        // screen; a scrolling container would be nicer but this is a two-line fix (C1).
-        return chosen >= MIN_STEP ? chosen : Math.max(MIN_TIGHT_STEP, chosen);
+        return Math.min(max, Math.max(MIN_STEP, fit));
     }
 
     /**
@@ -206,7 +221,7 @@ public final class SettingsScreen extends Screen {
             baseY.put(widget, widget.getY());
             lowest = Math.max(lowest, widget.getY() + widget.getHeight());
         }
-        maxScroll = Math.max(0, lowest + 8 - (this.height - contentBottom()));
+        maxScroll = Math.max(0, lowest + 8 - (vh() - contentBottom()));
         scroll = 0;
         applyScroll();
     }
@@ -214,14 +229,17 @@ public final class SettingsScreen extends Screen {
     /** Re-applies the current scroll offset to every scrollable element. */
     private void applyScroll() {
         int top = contentTop();
-        int bottom = this.height - contentBottom();
+        int bottom = vh() - contentBottom();
         for (Map.Entry<AbstractWidget, Integer> entry : baseY.entrySet()) {
             AbstractWidget widget = entry.getKey();
             int y = entry.getValue() - scroll;
             widget.setY(y);
-            // hidden, not merely covered: a widget scrolled under the tab row would
-            // otherwise paint over it and still take clicks
-            Widgets.visible(widget, y + widget.getHeight() > top - 2 && y < bottom + 2);
+            // Whole rows only: a row is shown when all of it is inside the content window.
+            // A row straddling the edge used to paint over the tab row, and the extractor's
+            // own scissor cannot help here - it lives in logical pixels while this page
+            // draws in design pixels, so pushing one costs every widget its hover state
+            // (containsPointInScissor then answers "no" for the pointer).
+            Widgets.visible(widget, y >= top - 1 && y + widget.getHeight() <= bottom + 1);
         }
         captions.clear();
         for (Caption caption : baseCaptions) {
@@ -239,8 +257,7 @@ public final class SettingsScreen extends Screen {
         if (maxScroll <= 0 || scrollY == 0.0d) {
             return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
         }
-        int step = (int) Math.round(scrollY * 14.0d);
-        if (step == 0) step = scrollY > 0 ? 1 : -1;
+        int step = UiScale.scrollStep(scrollY, ui());
         int next = Math.max(0, Math.min(maxScroll, scroll - step));
         if (next != scroll) {
             scroll = next;
@@ -251,11 +268,16 @@ public final class SettingsScreen extends Screen {
 
     /** Content starts under the tab row; short windows give up a little of that gap. */
     private int contentTop() {
-        return this.height >= 200 ? CONTENT_TOP : 32;
+        return vh() >= 200 ? CONTENT_TOP : 32;
     }
 
     private int contentBottom() {
-        return this.height >= 200 ? CONTENT_BOTTOM_MARGIN : 6;
+        return vh() >= 200 ? CONTENT_BOTTOM_MARGIN : 6;
+    }
+
+    /** Status line: the first of the two lines the bottom strip is reserved for. */
+    private int statusTop() {
+        return vh() - (vh() >= 200 ? 32 : 10);
     }
 
     private int rowH(int step) {
@@ -263,7 +285,7 @@ public final class SettingsScreen extends Screen {
     }
 
     private void layoutDisplayTab(int x0, int x1, int colW, int gap) {
-        int step = step(14, 26);
+        int step = step(19, 26);
         int rowH = rowH(step);
         int y = contentTop();
 
@@ -294,11 +316,26 @@ public final class SettingsScreen extends Screen {
         addToggle("smtcraft.opt.hide_paused", () -> cfg.hideWhenPaused, v -> cfg.hideWhenPaused = v, x0, y, colW, rowH);
         addToggle("smtcraft.opt.hide_empty", () -> cfg.hideWhenNoSession, v -> cfg.hideWhenNoSession = v, x1, y, colW, rowH);
         y += step;
+        addToggle("smtcraft.opt.hide_menu", () -> cfg.hideWhenScreenOpen,
+                v -> cfg.hideWhenScreenOpen = v, x0, y, x1 + colW - x0, rowH);
+        y += step;
         addToggle("smtcraft.opt.mute_music", () -> cfg.muteGameMusic, v -> cfg.muteGameMusic = v, x0, y, colW, rowH);
         addToggle("smtcraft.opt.shadow", () -> cfg.shadow, v -> cfg.shadow = v, x1, y, colW, rowH);
         y += step;
         addToggle("smtcraft.opt.auto_scale", () -> cfg.autoScale,
                 v -> cfg.autoScale = v, x0, y, x1 + colW - x0, rowH);
+        y += step;
+        addToggle("smtcraft.opt.lyrics_only", () -> cfg.lyricsOnly,
+                v -> cfg.lyricsOnly = v, x0, y, x1 + colW - x0, rowH);
+        y += step;
+        // rebuildWidgets() so the new multiplier reaches the layout immediately: with the
+        // switch on, a page built at the old factor keeps the old geometry until the
+        // player leaves and comes back, which reads as a dead switch (AUDIT-36-2)
+        addToggle("smtcraft.opt.follow_scale", () -> cfg.followGuiScale,
+                v -> {
+                    cfg.followGuiScale = v;
+                    rebuildWidgets();
+                }, x0, y, x1 + colW - x0, rowH, true);
         y += step;
         addSlider(x0, y, colW, rowH, 0.5d, 3.0d, cfg.scale,
                 v -> cfg.scale = (float) v,
@@ -306,6 +343,12 @@ public final class SettingsScreen extends Screen {
         addSlider(x1, y, colW, rowH, 0.0d, 1.0d, cfg.backgroundOpacity,
                 v -> cfg.backgroundOpacity = (float) v,
                 v -> Component.translatable("smtcraft.opt.opacity", Math.round(v * 100) + "%"));
+        y += step;
+        // its own row rather than a third column: the border is a 1 px line, so it needs the
+        // full width to show the difference between 0% and 10% at a glance
+        addSlider(x0, y, x1 + colW - x0, rowH, 0.0d, 1.0d, cfg.borderOpacity,
+                v -> cfg.borderOpacity = (float) v,
+                v -> Component.translatable("smtcraft.opt.border_opacity", Math.round(v * 100) + "%"));
         y += step;
         addSlider(x0, y, colW, rowH, 120d, 420d, cfg.panelWidth,
                 v -> cfg.panelWidth = (int) Math.round(v),
@@ -339,6 +382,17 @@ public final class SettingsScreen extends Screen {
         addSlider(x0, y, colW, rowH, 0d, 3000d, cfg.swapGraceMs,
                 v -> cfg.swapGraceMs = (int) Math.round(v),
                 v -> Component.translatable("smtcraft.opt.swap_grace", (int) Math.round(v)));
+        // the cover's own corner radius, next to the panel's: a flat square cover looks
+        // pasted on, and the disc mode has no corners to round
+        addSlider(x1, y, colW, rowH, SmtcConfig.MIN_ART_RADIUS, SmtcConfig.MAX_ART_RADIUS,
+                cfg.artRadius,
+                v -> cfg.artRadius = (int) Math.round(v),
+                v -> Component.translatable("smtcraft.opt.art_radius", (int) Math.round(v)));
+
+        y += step;
+        // the radius slider is useless as a switch: 0 is hard to hit with a slider, so the
+        // square cover gets its own toggle next to the anchor button
+        addToggle("smtcraft.opt.art_round", () -> cfg.artRound, v -> cfg.artRound = v, x0, y, colW, rowH);
 
         anchorButton = addRenderableWidget(Button.builder(Component.empty(), b -> {
             cfg.anchor = nextAnchor(cfg.anchor);
@@ -453,7 +507,7 @@ public final class SettingsScreen extends Screen {
 
     private void layoutThemeTab(int x0, int x1, int colW, int gap) {
         // colour rows carry a caption line above them, so they need more room
-        int step = step(8, 34);
+        int step = step(9, 34);
         int rowH = 16;
         int y = contentTop() + 8;
 
@@ -479,6 +533,11 @@ public final class SettingsScreen extends Screen {
         y += step;
         addColorRow(x0, y, colW, rowH, "smtcraft.opt.karaoke_color", "karaokeColor",
                 () -> cfg.karaokeColor, v -> cfg.karaokeColor = v);
+        y += step;
+        addColorRow(x0, y, colW, rowH, "smtcraft.opt.translation_color", "translationColor",
+                () -> cfg.translationColor, v -> cfg.translationColor = v);
+        addColorRow(x1, y, colW, rowH, "smtcraft.opt.candidate_color", "candidateColor",
+                () -> cfg.candidateColor, v -> cfg.candidateColor = v);
         y += step;
 
         addRenderableWidget(Button.builder(Component.translatable("smtcraft.opt.theme_reset"), b -> {
@@ -542,6 +601,109 @@ public final class SettingsScreen extends Screen {
     }
 
     /**
+     * The about tab: what this jar is, where the project lives, and one button that looks
+     * for a newer release.
+     *
+     * <p>The links go through {@link ConfirmLinkScreen}, Minecraft's own link opener, instead
+     * of a browser call of our own: it hands the address to the system browser from the game
+     * thread and is the same call every vanilla link button makes.</p>
+     */
+    private void layoutAboutTab(int x0, int colW, int gap) {
+        int step = step(7, 30);
+        int rowH = rowH(step);
+        int y = contentTop();
+
+        captions.add(new Caption(x0, y - 9, Component.translatable("smtcraft.about.version",
+                SmtcCraftClient.version())));
+        y += step;
+
+        updateButton = addRenderableWidget(Button.builder(Component.empty(), b -> {
+            UpdateCheck.State state = UpdateCheck.state();
+            if (!cfg.checkUpdates) {
+                // the switch is off, so nothing is in flight and the page says so; the
+                // button is the obvious thing to click next, so it turns the switch on
+                // instead of quietly doing the request the switch was meant to stop
+                // (AUDIT-47-2)
+                cfg.checkUpdates = true;
+                cfg.save();
+                UpdateCheck.request(SmtcCraftClient.version(), true);
+                aboutStamp = -1L;
+                refresh();
+                return;
+            }
+            // an answer that names a newer build turns the button into the way there;
+            // anything else asks again, which is what a player expects from "retry"
+            if (state.available()) {
+                openPage(state.url());
+            } else {
+                UpdateCheck.request(SmtcCraftClient.version(), true);
+            }
+            aboutStamp = -1L;
+            refresh();
+        }).bounds(x0, y, contentWidth, rowH).build());
+        y += step;
+
+        // the switch the FAQ has always implied: with it off nothing is requested at all,
+        // rather than the badge quietly asking behind the player's back (AUDIT-46-6)
+        addToggle("smtcraft.opt.check_updates", () -> cfg.checkUpdates, v -> {
+            cfg.checkUpdates = v;
+            if (v) UpdateCheck.request(SmtcCraftClient.version(), true);
+            aboutStamp = -1L;
+            refresh();
+        }, x0, y, contentWidth, rowH);
+        y += step;
+
+        int third = (contentWidth - 2 * gap) / 3;
+        addRenderableWidget(Button.builder(Component.translatable("smtcraft.about.releases"),
+                b -> openPage(UpdateCheck.RELEASES)).bounds(x0, y, third, rowH).build());
+        addRenderableWidget(Button.builder(Component.translatable("smtcraft.about.issues"),
+                b -> openPage(UpdateCheck.ISSUES)).bounds(x0 + third + gap, y, third, rowH).build());
+        addRenderableWidget(Button.builder(Component.translatable("smtcraft.about.home"),
+                b -> openPage(UpdateCheck.HOME)).bounds(x0 + 2 * (third + gap), y, third, rowH).build());
+        y += step;
+
+        captions.add(new Caption(x0, y - 9, Component.translatable("smtcraft.about.note")));
+    }
+
+    /** Hands an address to the system browser; a malformed one is logged, not thrown. */
+    private void openPage(String url) {
+        if (this.minecraft == null || url == null || url.isEmpty()) return;
+        try {
+            ConfirmLinkScreen.confirmLinkNow(this, URI.create(url));
+        } catch (Throwable failed) {
+            LOG.warn("the link {} could not be opened ({})", url, Errors.describe(failed));
+        }
+    }
+
+    /**
+     * What the check button says: the state of the last look, and what a click does next.
+     * A button that always reads "check for updates" leaves the answer invisible, and the
+     * answer arrives from another thread long after the page was built (AUDIT-45).
+     */
+    private Component updateLabel() {
+        UpdateCheck.State state = UpdateCheck.state();
+        // one decision, one implementation: the Mod Menu badge asks the same function, so
+        // the page and the badge cannot disagree while a forced look is in flight, and an
+        // empty state can no longer pass for a look that is still running (AUDIT-47-1,
+        // AUDIT-47-3)
+        String key = UpdateCheck.badgeKey(state, UpdateCheck.running(), cfg.checkUpdates);
+        if (UpdateCheck.BADGE_AVAILABLE.equals(key)) {
+            return Component.translatable("smtcraft.about.available", state.latest());
+        }
+        if (UpdateCheck.BADGE_FAILED.equals(key)) {
+            // one short translated reason; the raw note (every route and its status) is in
+            // the log, where a bug report can quote it (AUDIT-46-5)
+            return Component.translatable("smtcraft.about.failed",
+                    Component.translatable(UpdateCheck.reasonKey(state)));
+        }
+        if (UpdateCheck.BADGE_CURRENT.equals(key)) {
+            return Component.translatable("smtcraft.about.latest", state.current());
+        }
+        // "checking", "off" and "the version could not be read" take no argument
+        return Component.translatable(key);
+    }
+
+    /**
      * A language slot: the button shows the chosen file and opens the installed-font
      * list, and the space to its right previews the slot in its own font.
      */
@@ -555,7 +717,7 @@ public final class SettingsScreen extends Screen {
                 cfg.save();
                 FontPack.invalidate();
                 if ("system".equals(cfg.lyricFontMode) && mod != null) mod.applyFonts();
-            }));
+            }, cfg.followGuiScale));
         }).bounds(x, y, w, h).build());
         slots.add(new SlotButton(button, labelKey, getter));
         // readiness is resolved once per screen build: a per-frame Files.isReadable
@@ -592,10 +754,34 @@ public final class SettingsScreen extends Screen {
                 box.setValue(value);
                 cfg.markCustom(key);
                 cfg.save();
-            }));
+            }, cfg.followGuiScale));
         }).bounds(x + w - btnW, y, btnW, h).build());
         colorButtons.add(new ColorButton(pick, key, getter));
         captions.add(new Caption(x, y - 9, Component.translatable(labelKey)));
+    }
+
+    /**
+     * A colour from the config as ARGB. The value is user-editable text: "#RGB",
+     * "#RRGGBB", "#AARRGGBB", empty or nonsense all have to paint something instead of
+     * throwing while the page is being drawn.
+     */
+    static int parseColor(String hex) {
+        if (hex == null) return 0xFF808080;
+        String text = hex.trim();
+        if (text.startsWith("#")) text = text.substring(1);
+        try {
+            if (text.length() == 3) {
+                int r = Integer.parseInt(text.substring(0, 1), 16) * 17;
+                int g = Integer.parseInt(text.substring(1, 2), 16) * 17;
+                int b = Integer.parseInt(text.substring(2, 3), 16) * 17;
+                return 0xFF000000 | (r << 16) | (g << 8) | b;
+            }
+            if (text.length() == 6) return 0xFF000000 | Integer.parseInt(text, 16);
+            if (text.length() == 8) return (int) Long.parseLong(text, 16);
+        } catch (NumberFormatException notAColour) {
+            return 0xFF808080;
+        }
+        return 0xFF808080;
     }
 
     /** Persist shortly after the last change instead of on every drag frame (C5). */
@@ -620,7 +806,7 @@ public final class SettingsScreen extends Screen {
     }
 
     /**
-     * Translation key for a config problem category (R19-3). Written without a
+     * Translation key for a config problem category (AUDIT-19-3). Written without a
      * {@code default} on purpose: a new {@link SmtcConfig.Problem} should stop the
      * compile, not quietly render as "save failed" (R20 doc note). {@code NONE} is
      * listed so the switch stays exhaustive; the footer never prints it.
@@ -648,12 +834,22 @@ public final class SettingsScreen extends Screen {
     }
 
     private void addToggle(String key, BooleanSupplier get, Consumer<Boolean> set, int x, int y, int w, int h) {
+        addToggle(key, get, set, x, y, w, h, false);
+    }
+
+    /**
+     * Same row, with the two words swapped on screen (the switch still writes the value the
+     * supplier reports). One page asked for the text to read the other way round; the state
+     * itself is untouched, so the rest of the code keeps thinking in true = on.
+     */
+    private void addToggle(String key, BooleanSupplier get, Consumer<Boolean> set, int x, int y, int w, int h,
+                           boolean inverted) {
         Button button = Button.builder(Component.empty(), b -> {
             set.accept(!get.getAsBoolean());
             cfg.save();
             refresh();
         }).bounds(x, y, w, h).build();
-        toggles.add(new ToggleRow(button, Component.translatable(key), get));
+        toggles.add(new ToggleRow(button, Component.translatable(key), get, inverted));
         addRenderableWidget(button);
     }
 
@@ -669,7 +865,7 @@ public final class SettingsScreen extends Screen {
      * Provider orders the button cycles through.
      *
      * <p>Generated from {@link LyricProvider#KNOWN} instead of written out: the
-     * hand-kept list drifted out of sync with the providers (R3-3), and adding a
+     * hand-kept list drifted out of sync with the providers (AUDIT-33), and adding a
      * source should not require remembering this table (C7). The default comes
      * first, then every permutation, then each provider on its own for the case
      * where two of the three are unreachable.</p>
@@ -733,7 +929,8 @@ public final class SettingsScreen extends Screen {
         for (ToggleRow row : toggles) {
             row.button.setMessage(row.label.copy()
                     .append(": ")
-                    .append(Component.translatable(row.value.getAsBoolean() ? "smtcraft.on" : "smtcraft.off")));
+                    .append(Component.translatable(row.value.getAsBoolean() != row.inverted
+                            ? "smtcraft.on" : "smtcraft.off")));
         }
         if (anchorButton != null) {
             anchorButton.setMessage(Component.translatable("smtcraft.opt.anchor",
@@ -779,6 +976,10 @@ public final class SettingsScreen extends Screen {
                     .append(": ")
                     .append(value));
         }
+        if (updateButton != null) {
+            updateButton.setMessage(updateLabel());
+            aboutStamp = UpdateCheck.state().at() * 2L + (UpdateCheck.running() ? 1L : 0L);
+        }
         for (TabButton button : tabButtons) {
             button.button().active = button.index() != this.tab;
         }
@@ -788,10 +989,10 @@ public final class SettingsScreen extends Screen {
      * Thin track in the right-edge gutter while the tab overflows.
      *
      * <p>The container works without it, but nothing on screen says there is more
-     * below the fold, so nobody ever scrolls (R6-9). Two things follow from
+     * below the fold, so nobody ever scrolls (AUDIT-69). Two things follow from
      * comparing it to a real scrollbar: it lives in a gutter instead of on the
      * last two pixels of the content, and the thumb can be dragged — a handle that
-     * looks draggable but ignores the mouse reads as a frozen screen (R7-5).</p>
+     * looks draggable but ignores the mouse reads as a frozen screen (AUDIT-75).</p>
      */
     private void drawScrollBar(GuiGraphicsExtractor g) {
         int span = barSpan();
@@ -804,7 +1005,7 @@ public final class SettingsScreen extends Screen {
 
     /** Track geometry, shared by the drawing and the hit test so they cannot drift. */
     private int barX() {
-        return this.width - BAR_GUTTER;
+        return vw() - BAR_GUTTER;
     }
 
     private int barTop() {
@@ -812,7 +1013,7 @@ public final class SettingsScreen extends Screen {
     }
 
     private int barBottom() {
-        return this.height - contentBottom();
+        return vh() - contentBottom();
     }
 
     private int barSpan() {
@@ -846,13 +1047,13 @@ public final class SettingsScreen extends Screen {
                 && mouseY >= barTop() - 2 && mouseY <= barBottom() + 2;
     }
 
-    /** One page up or down, decided by which side of the thumb was clicked (R8-3). */
+    /** One page up or down, decided by which side of the thumb was clicked (AUDIT-83). */
     private void pageScroll(double mouseY) {
         int span = barSpan();
         if (span <= 8) return;
         // one page is one viewport of content. barView() is thumb height on the
         // bar, which shrinks as the page grows, so using it here made a click
-        // scroll less the longer the page was (R9-3).
+        // scroll less the longer the page was (AUDIT-93).
         int page = Math.max(1, (barBottom() - barTop()) * 8 / 10);
         boolean below = mouseY > barThumbTop(span) + barView(span);
         int next = Math.max(0, Math.min(maxScroll, scroll + (below ? page : -page)));
@@ -882,7 +1083,7 @@ public final class SettingsScreen extends Screen {
     }
 
     @Override
-    public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+    protected boolean onClick(MouseButtonEvent event, boolean doubleClick) {
         if (event.button() == 0 && overScrollBar(event.x(), event.y())) {
             draggingBar = true;
             scrollToBar(event.y());
@@ -892,45 +1093,57 @@ public final class SettingsScreen extends Screen {
             pageScroll(event.y());
             return true;
         }
-        return super.mouseClicked(event, doubleClick);
+        return false;
     }
 
     @Override
-    public boolean mouseDragged(MouseButtonEvent event, double dragX, double dragY) {
+    protected boolean onDrag(MouseButtonEvent event, double dragX, double dragY) {
         if (draggingBar) {
             scrollToBar(event.y());
             return true;
         }
-        return super.mouseDragged(event, dragX, dragY);
+        return false;
     }
 
     @Override
-    public boolean mouseReleased(MouseButtonEvent event) {
+    protected boolean onRelease(MouseButtonEvent event) {
         if (draggingBar) {
             draggingBar = false;
             return true;
         }
-        return super.mouseReleased(event);
+        return false;
     }
 
-    /** 26.1 up to 26.4-snapshot-4 hand the pointer along with the frame. */
-    public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        draw(g, mouseX, mouseY, partialTick);
-    }
-
-    /** 26.4-snapshot-5 and later hand over the extractor, which carries the pointer itself. */
-    public void extractRenderState(GuiGraphicsExtractor g) {
-        draw(g, ScreenHooks.mouseX(g, 0), ScreenHooks.mouseY(g, 0), ScreenHooks.partialTicks(g, 0.0f));
-    }
-
-    private void draw(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        ScreenHooks.drawBackground(this, g, mouseX, mouseY, partialTick);
-
+    /**
+     * The parts of the page that are not rows: the title, the scrollbar and the two status
+     * lines. They are drawn after the content clip has ended - inside it the scrollbar in the
+     * right gutter and the title above the tabs were cut away, which is why a windowed page
+     * showed no bar at all.
+     */
+    @Override
+    protected void drawOverlay(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
         long now = System.currentTimeMillis();
         if (savePending && now >= saveAt) {
             savePending = false;
             cfg.save();
         }
+        g.centeredText(this.font, this.title.getString(), vw() / 2, 6, 0xFFFFFFFF);
+        drawScrollBar(g);
+        drawStatus(g);
+        // The release check answers on its own thread; the button follows that answer
+        // without rebuilding the page's widgets on every frame.
+        if (this.tab == 4 && updateButton != null) {
+            long stamp = UpdateCheck.state().at() * 2L + (UpdateCheck.running() ? 1L : 0L);
+            if (stamp != aboutStamp) {
+                aboutStamp = stamp;
+                updateButton.setMessage(updateLabel());
+            }
+        }
+    }
+
+    @Override
+    protected void drawFrame(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        long now = System.currentTimeMillis();
         // the generated font pack can be rewritten while this screen is open, so
         // a preview's readiness is re-checked instead of frozen at init (C6)
         if (!slotPreviews.isEmpty() && now - slotRefreshAt >= 500L) {
@@ -943,11 +1156,26 @@ public final class SettingsScreen extends Screen {
             }
         }
 
-        g.centeredText(this.font, this.title.getString(), this.width / 2, 6, 0xFFFFFFFF);
-
         for (Caption caption : captions) {
-            if (caption.y < contentTop() - 4 || caption.y > this.height - contentBottom()) continue;
+            if (caption.y - 9 < contentTop() || caption.y > vh() - contentBottom()) continue;
             g.text(this.font, caption.text, caption.x, caption.y, 0xFF9FB2C8);
+        }
+        // The picker button carries the colour itself, not its hex: 22 px shows three and a
+        // half characters of "#3FDC8E", while the caption above already names the colour.
+        // Painted after the widgets so it covers the vanilla button face and its label.
+        for (ColorButton color : colorButtons) {
+            Button button = color.button;
+            int bx = button.getX();
+            int by = button.getY();
+            int bw = button.getWidth();
+            int bh = button.getHeight();
+            if (by + bh < contentTop() || by > vh() - contentBottom()) continue;
+            g.fill(bx + 1, by + 1, bx + bw - 1, by + bh - 1, parseColor(color.getter.get()));
+            int border = button.isHovered() ? 0xFFFFFFFF : 0xFF16202A;
+            g.fill(bx, by, bx + bw, by + 1, border);
+            g.fill(bx, by + bh - 1, bx + bw, by + bh, border);
+            g.fill(bx, by, bx + 1, by + bh, border);
+            g.fill(bx + bw - 1, by, bx + bw, by + bh, border);
         }
 
         // per-slot font preview: real glyphs of the chosen file, so the difference
@@ -965,8 +1193,10 @@ public final class SettingsScreen extends Screen {
                     ready ? 0xFFCFE3FF : 0xFF66707C, true);
         }
 
-        drawScrollBar(g);
+    }
 
+    /** The two status lines under the content window; see {@link #drawOverlay}. */
+    private void drawStatus(GuiGraphicsExtractor g) {
         MediaBridge bridge = mod == null ? null : mod.bridge();
         String status;
         int color;
@@ -994,18 +1224,18 @@ public final class SettingsScreen extends Screen {
         // it: a read-only config directory, a full disk, or an antivirus holding the
         // file through the atomic move all looked exactly like "the setting does not
         // stick", with the reason sitting in a log line nobody was told to open
-        // (R17-2).
+        // (AUDIT-17-2).
         // The category, not the message: the footer is one line of UI in the player's
         // language, and the message it used to print was a log string — an exception
-        // class and an OS text in English, glued onto a Chinese sentence (R19-3).
+        // class and an OS text in English, glued onto a Chinese sentence (AUDIT-19-3).
         SmtcConfig.Problem saveProblem = cfg.lastProblem();
         if (saveProblem != SmtcConfig.Problem.NONE) {
             status = status + "  ! "
                     + Component.translatable(problemKey(saveProblem)).getString();
             color = 0xFFFFB060;
         }
-        boolean roomy = this.height >= 200;
-        g.text(this.font, status, contentLeft, this.height - (roomy ? 24 : 10), color);
+        boolean roomy = vh() >= 200;
+        g.text(this.font, status, contentLeft, statusTop(), color);
 
         LyricService lyrics = mod == null ? null : mod.lyrics();
         String footer;
@@ -1021,7 +1251,7 @@ public final class SettingsScreen extends Screen {
             footer = Component.translatable("smtcraft.settings.status.off").getString();
         }
         // a 192 px window cannot hold both lines without cutting a row (C1)
-        if (roomy) g.text(this.font, footer, contentLeft, this.height - 13, 0xFF9FB2C8);
+        if (roomy) g.text(this.font, footer, contentLeft, vh() - 20, 0xFF9FB2C8);
     }
 
     @Override
@@ -1038,7 +1268,7 @@ public final class SettingsScreen extends Screen {
     private record Caption(int x, int y, Component text) {
     }
 
-    private record ToggleRow(Button button, Component label, BooleanSupplier value) {
+    private record ToggleRow(Button button, Component label, BooleanSupplier value, boolean inverted) {
     }
 
     private record TabButton(Button button, int index) {

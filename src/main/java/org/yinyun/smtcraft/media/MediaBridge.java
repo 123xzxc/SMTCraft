@@ -22,7 +22,7 @@ public interface MediaBridge extends AutoCloseable {
      * {@code Position} and {@code Identity} (0.5 s each) — plus a cover download
      * (1.5 s connect plus a 5 s read deadline): about 10.2 s worst case, so 3 s
      * covered 3.4× less than one round and an exit could leave a live sampler
-     * behind (R7-1). Windows needs about 0.9 s, so the ceiling only matters there
+     * behind (AUDIT-71). Windows needs about 0.9 s, so the ceiling only matters there
      * in a pathological round.</p>
      *
      * <p>The wait is no longer about a shared native arena: each bridge closes
@@ -65,7 +65,7 @@ public interface MediaBridge extends AutoCloseable {
      *
      * <p>The shutdown sequence has one budget for all of its steps, so a single
      * bridge may not spend the whole {@link #CLOSE_GRACE_MS} and starve the ones
-     * after it (R7-6).</p>
+     * after it (AUDIT-76).</p>
      */
     void close(long budgetMs);
 }

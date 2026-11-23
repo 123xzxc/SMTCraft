@@ -20,14 +20,14 @@ public final class ProgressSmoother {
     /**
      * Forward jumps bigger than this are a seek unless the wall clock already
      * explains them: a player that publishes every four seconds jumps four
-     * seconds and is not seeking (R26-3).
+     * seconds and is not seeking (AUDIT-26-3).
      */
     private static final long SEEK_STEP_MS = 2500L;
     /**
      * Longest gap that may be learned as a publishing period. It used to be
      * {@link #SEEK_STEP_MS}, so a slow publisher was permanently classified as a
      * stall and its cap never grew past 1.5 s while the screen fell 2.4 s behind
-     * (R26-3).
+     * (AUDIT-26-3).
      */
     private static final long LEARN_MAX_MS = 10_000L;
     /**
@@ -85,7 +85,7 @@ public final class ProgressSmoother {
         long step = rawPos - lastRaw;
         long gap = Math.max(0L, now - changedAt);
         // A step the wall clock accounts for is the app catching up, however large:
-        // a four second publisher jumps four seconds and is not seeking (R26-3).
+        // a four second publisher jumps four seconds and is not seeking (AUDIT-26-3).
         boolean explained = step > 0L
                 && Math.abs(step - Math.round(gap * r)) <= STEP_SLACK_MS;
         long out;
@@ -102,9 +102,9 @@ public final class ProgressSmoother {
                 // seconds while still reporting 'playing') closes a four second gap,
                 // and learning that raised the extrapolation cap exactly when the
                 // feed was least trustworthy - the cap is there to survive a stall,
-                // not to grow on one (R25-3). The gap also has to repeat before it
+                // not to grow on one (AUDIT-25-3). The gap also has to repeat before it
                 // is adopted: one stall-shaped gap is a guess, two equal ones are a
-                // period (R26-3).
+                // period (AUDIT-26-3).
                 if (isBeat(step, gap, r)) {
                     learn(gap);
                 } else {
@@ -128,7 +128,7 @@ public final class ProgressSmoother {
      * believable, and the distance the position moved has to match the time that
      * passed. The second half is what a frozen app cannot fake, and what a player
      * that only reports whole half seconds fails - which is why it keeps the
-     * default period instead of teaching the smoother something wrong (R26-4).
+     * default period instead of teaching the smoother something wrong (AUDIT-26-4).
      */
     private static boolean isBeat(long step, long gap, float rate) {
         return gap >= 100L && gap <= LEARN_MAX_MS

@@ -27,7 +27,7 @@ public final class MprisArt {
     public static final int MAX_BYTES = 4 * 1024 * 1024;
     private static final int CONNECT_TIMEOUT_MS = 1_500;
     private static final int READ_TIMEOUT_MS = 3_000;
-    /** Whole-body deadline; a trickling server must not hold the sampler (R5-5). */
+    /** Whole-body deadline; a trickling server must not hold the sampler (AUDIT-55). */
     private static final long READ_DEADLINE_MS = 5_000L;
 
     private MprisArt() {}
@@ -80,7 +80,7 @@ public final class MprisArt {
         StringBuilder out = new StringBuilder(s.length());
         // escapes are collected as bytes and decoded as one run: decoding each byte
         // separately turns every multi-byte character into replacement characters,
-        // which is why a cover under a Chinese path was never found (R5-3)
+        // which is why a cover under a Chinese path was never found (AUDIT-53)
         java.io.ByteArrayOutputStream pending = new java.io.ByteArrayOutputStream(8);
         int i = 0;
         while (i < s.length()) {
@@ -157,7 +157,7 @@ public final class MprisArt {
             return HexFormat.of().formatHex(Arrays.copyOf(digest, 8));
         } catch (Throwable t) {
             // same 16 hex characters the SHA-1 path produces, so artworkHash does
-            // not change shape when the digest is unavailable (R5-12)
+            // not change shape when the digest is unavailable (AUDIT-51-2)
             long mixed = ((long) Arrays.hashCode(data) << 32) ^ data.length;
             return String.format("%016x", mixed);
         }

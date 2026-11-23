@@ -7,6 +7,8 @@ import org.yinyun.smtcraft.smtc.LyricService;
 import org.yinyun.smtcraft.smtc.LyricTrack;
 import org.yinyun.smtcraft.media.MediaBridge;
 import org.yinyun.smtcraft.smtc.TrackInfo;
+import org.yinyun.smtcraft.util.GameScale;
+import org.yinyun.smtcraft.util.Screens;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -139,9 +141,10 @@ public final class NowPlayingHud implements HudElement {
         Minecraft mc = Minecraft.getInstance();
         if (mc == null) return;
         if (mc.getDebugOverlay() != null && mc.getDebugOverlay().showDebugScreen()) return;
-
-        // time keeps running while the panel is hidden, so the marquee phase and
-        // the disc angle do not jump when it reappears (C13)
+        // time keeps running while the panel is hidden, so the marquee phase and the disc
+        // angle do not jump when it reappears (C13). Every hide check sits *below* this line:
+        // one above it freezes the clock for that option only, which is how this method used
+        // to be laid out (AUDIT-34-3).
         float step = delta == null ? wallStep() : deltaSeconds(delta);
         clock += step;
 
@@ -152,6 +155,14 @@ public final class NowPlayingHud implements HudElement {
         byte[] artBytes = bridge == null ? null : bridge.artwork();
         String artHash = bridge == null ? "" : bridge.artworkHash();
         boolean hasTrack = track.hasTrack();
+        advanceSpin(cfg, track, step);
+
+        // any open screen draws over the HUD anyway; this option stops it from being
+        // painted behind the inventory, the settings page, the pause menu (AUDIT-38)
+        if (cfg.hideWhenScreenOpen && Screens.menuOpen()) {
+            animator.finish();
+            return;
+        }
         // debug mode always draws, so a broken reader is visible instead of blank
         if (!hasTrack && cfg.hideWhenNoSession && !cfg.debug) {
             animator.finish();
@@ -162,53 +173,71 @@ public final class NowPlayingHud implements HudElement {
             return;
         }
 
-        advanceSpin(cfg, track, step);
-
         LyricService service = mod.lyrics();
         LyricTrack lyrics = cfg.showLyrics && service != null && service.matches(track)
                 ? service.track()
                 : LyricTrack.EMPTY;
 
         Font font = mc.font;
-        float scale = cfg.scale <= 0.1f ? 0.1f : cfg.scale;
+        // the panel is drawn for GUI scale 2; without this it covers twice the glass at
+        // scale 4 and half of it at scale 1 (AUDIT-36-1)
+        float scale = (cfg.scale <= 0.1f ? 0.1f : cfg.scale) * GameScale.factor(cfg.followGuiScale);
         int width = resolveWidth(cfg, font, track, hasTrack);
 
         LyricLayout layout = LyricLayout.of(cfg);
-        int lyricH = layout.rows == 0 ? 0 : LYRIC_GAP + layout.rows * layout.blockH
-                + LYRIC_BOTTOM_PAD;
+        // lyrics-only: the header block (cover, title, progress) is not drawn at all, so
+        // the band starts at the panel edge. Without a session it stays a full panel -
+        // a band with no lyrics in it would be an invisible mod.
+        boolean lyricsOnly = cfg.lyricsOnly && hasTrack;
+        int headerH = lyricsOnly ? 0 : BASE_H;
+        int bandRows = layout.rows == 0 ? 1 : layout.rows;
+        int lyricH = layout.rows == 0 && !lyricsOnly
+                ? 0
+                : LYRIC_GAP + bandRows * layout.blockH + LYRIC_BOTTOM_PAD;
         // with no session there is no lyric band to reserve space for
-        int height = BASE_H + (hasTrack ? lyricH : 0);
+        int height = lyricsOnly ? lyricH : BASE_H + (hasTrack ? lyricH : 0);
 
         // a windowed client makes the same GUI-unit panel cover far more of the
         // screen; shrink it back towards the full-screen proportions
         float panelScale = scale * autoFit(cfg, g, width, height, scale);
 
         g.pose().pushMatrix();
-        g.pose().translate(anchorX(cfg, g.guiWidth(), Math.round(width * panelScale)),
-                           anchorY(cfg, g.guiHeight(), Math.round(height * panelScale)));
-        g.pose().scale(panelScale);
+        // pushed outside the try, popped in the finally: an exception halfway through would
+        // otherwise leave the pose scaled for the whole rest of the frame - and, if it happens
+        // while the scissor is on, the entire screen clipped down to the panel (AUDIT-35-5)
+        try {
+            g.pose().translate(anchorX(cfg, g.guiWidth(), Math.round(width * panelScale)),
+                               anchorY(cfg, g.guiHeight(), Math.round(height * panelScale)));
+            g.pose().scale(panelScale);
 
-        renderPanel(g, mc, font, cfg, width, height, track, hasTrack, step, artHash, artBytes);
-
-        if (layout.rows > 0) {
-            // the line-change animation slides rows through the lyric band, so the
-            // band is clipped to the panel: enableScissor() transforms its rect by
-            // the current pose, which here is the panel's own design space
-            g.enableScissor(0, BASE_H - 1, width, height);
-            renderLyrics(g, mc, cfg, width, layout, track, lyrics, step);
-            g.disableScissor();
-        }
-
-        if (!noticeText.isEmpty()) {
-            float age = clock - noticeAt;
-            if (age >= 0.0f && age < NOTICE_SECONDS) {
-                float a = Math.min(1.0f, Math.min(age / 0.12f, (NOTICE_SECONDS - age) / 0.5f));
-                g.centeredText(font, noticeText, width / 2, height + 4,
-                        Draw.scaleAlpha(0xFFE8F0FF, a));
+            drawChrome(g, cfg, width, height);
+            if (!lyricsOnly) {
+                renderPanel(g, mc, font, cfg, width, height, track, hasTrack, step, artHash, artBytes);
             }
-        }
 
-        g.pose().popMatrix();
+            if (layout.rows > 0 || lyricsOnly) {
+                // the line-change animation slides rows through the lyric band, so the
+                // band is clipped to the panel: enableScissor() transforms its rect by
+                // the current pose, which here is the panel's own design space
+                g.enableScissor(0, headerH - 1, width, height);
+                try {
+                    renderLyrics(g, mc, cfg, width, headerH, bandRows, layout, track, lyrics, step);
+                } finally {
+                    g.disableScissor();
+                }
+            }
+
+            if (!noticeText.isEmpty()) {
+                float age = clock - noticeAt;
+                if (age >= 0.0f && age < NOTICE_SECONDS) {
+                    float a = Math.min(1.0f, Math.min(age / 0.12f, (NOTICE_SECONDS - age) / 0.5f));
+                    g.centeredText(font, noticeText, width / 2, height + 4,
+                            Draw.scaleAlpha(0xFFE8F0FF, a));
+                }
+            }
+        } finally {
+            g.pose().popMatrix();
+        }
     }
 
     /** Show a line under the panel for a couple of seconds (offset nudge feedback). */
@@ -226,7 +255,10 @@ public final class NowPlayingHud implements HudElement {
     /** Panel width: the configured minimum, or wider when the text needs it. */
     private int resolveWidth(SmtcConfig cfg, Font font, TrackInfo track, boolean hasTrack) {
         int base = Math.max(DESIGN_W, cfg.panelWidth);
-        if (!cfg.adaptiveWidth || !hasTrack) return base;
+        // a lyrics-only panel has no title or cover to widen for; the band is centred
+        // anyway, so measuring the header would only make the overlay wider than the
+        // text it now shows
+        if (!cfg.adaptiveWidth || !hasTrack || cfg.lyricsOnly) return base;
         int artW = cfg.showArtwork ? ART + 7 : 0;
         int appW = cfg.showSourceApp && !track.app().isEmpty()
                 ? font.width(Draw.appName(track.app())) + 8
@@ -254,22 +286,29 @@ public final class NowPlayingHud implements HudElement {
         spin = (spin + speed * step) % 360.0f;
     }
 
+    /**
+     * The plate itself: fill and border only. It is drawn for a lyrics-only panel too, which
+     * has no header to paint but still has to sit on something.
+     */
+    private void drawChrome(GuiGraphicsExtractor g, SmtcConfig cfg, int width, int height) {
+        int bg = Draw.withAlpha(0x000000, cfg.backgroundOpacity);
+        int border = Draw.withAlpha(0xFFFFFF, cfg.borderOpacity);
+        int radius = Math.max(0, Math.min(24, cfg.cornerRadius));
+        if (radius > 0) {
+            Draw.fillRound(g, 0, 0, width, height, radius, bg);
+            Draw.outlineRound(g, 0, 0, width, height, radius, border);
+        } else {
+            g.fill(0, 0, width, height, bg);
+            g.fill(0, 0, width, 1, border);
+            g.fill(0, height - 1, width, height, border);
+        }
+    }
+
     private void renderPanel(GuiGraphicsExtractor g, Minecraft mc, Font font, SmtcConfig cfg,
                              int width, int height, TrackInfo track, boolean hasTrack,
                              float dt, String artHash, byte[] artBytes) {
         int x = 0;
         int y = 0;
-
-        int bg = Draw.withAlpha(0x000000, cfg.backgroundOpacity);
-        int radius = Math.max(0, Math.min(24, cfg.cornerRadius));
-        if (radius > 0) {
-            Draw.fillRound(g, x, y, width, height, radius, bg);
-            Draw.outlineRound(g, x, y, width, height, radius, Draw.withAlpha(0xFFFFFF, 0.10f));
-        } else {
-            g.fill(x, y, x + width, y + height, bg);
-            g.fill(x, y, x + width, y + 1, Draw.withAlpha(0xFFFFFF, 0.10f));
-            g.fill(x, y + height - 1, x + width, y + height, Draw.withAlpha(0xFFFFFF, 0.10f));
-        }
 
         int textColor = Draw.color(cfg.textColor, 0xFFFFFFFF);
         int dimColor = Draw.color(cfg.dimTextColor, 0xFFB8BCC4);
@@ -286,7 +325,9 @@ public final class NowPlayingHud implements HudElement {
 
         if (cfg.showArtwork) {
             long artStart = System.nanoTime();
-            Identifier tex = artwork.texture(artHash, artBytes, cfg.vinyl);
+            Identifier tex = cfg.vinyl
+                    ? artwork.texture(artHash, artBytes, true)
+                    : artwork.textureRounded(artHash, artBytes, cfg.artRound ? cfg.artRadius : 0, ART);
             long artMs = (System.nanoTime() - artStart) / 1_000_000L;
             if (artMs >= 30L) {
                 // decoding happens on a background thread, so a slow frame here means
@@ -306,7 +347,12 @@ public final class NowPlayingHud implements HudElement {
                     g.blit(tex, ax, ay, ax + ART, ay + ART, 0f, 1f, 0f, 1f);
                 }
             } else {
-                g.fill(ax, ay, ax + ART, ay + ART, Draw.withAlpha(0xFFFFFF, 0.08f));
+                int r = cfg.artRound ? Math.max(0, Math.min(ART / 2, cfg.artRadius)) : 0;
+                if (r > 0) {
+                    Draw.fillRound(g, ax, ay, ART, ART, r, Draw.withAlpha(0xFFFFFF, 0.08f));
+                } else {
+                    g.fill(ax, ay, ax + ART, ay + ART, Draw.withAlpha(0xFFFFFF, 0.08f));
+                }
                 String note = "\u266B";
                 g.text(font, note, ax + ART / 2 - font.width(note) / 2, ay + ART / 2 - 4, dimColor);
             }
@@ -445,7 +491,7 @@ public final class NowPlayingHud implements HudElement {
             // This row has per-word timings, so the renderer already knows the sung
             // edge in glyph pixels. A time fraction here would be a second, different
             // metric driving the same row - and the two disagree on mixed scripts,
-            // on rows with missing word tags, and wherever the font is narrow (R26-5).
+            // on rows with missing word tags, and wherever the font is narrow (AUDIT-26-5).
             scrollOut = 0.0f;
             return -1.0f;
         }
@@ -467,19 +513,26 @@ public final class NowPlayingHud implements HudElement {
         float cx = ax + ART / 2.0f;
         float cy = ay + ART / 2.0f;
         int half = ART / 2;
+        // The third of the three push/pop pairs (AUDIT-44-6): the other two were wrapped in
+        // AUDIT-35-5 and this one was missed. A throw here would leave the matrix rotated, and
+        // every later frame would draw one notch off.
         g.pose().pushMatrix();
-        g.pose().translate(cx, cy);
-        g.pose().rotate((float) Math.toRadians(spin));
-        g.blit(tex, -half, -half, half, half, 0f, 1f, 0f, 1f);
-        // spindle hole, painted in the rotated space so it stays in the middle
-        g.fill(-1, -1, 1, 1, 0xCC101010);
-        g.pose().popMatrix();
+        try {
+            g.pose().translate(cx, cy);
+            g.pose().rotate((float) Math.toRadians(spin));
+            g.blit(tex, -half, -half, half, half, 0f, 1f, 0f, 1f);
+            // spindle hole, painted in the rotated space so it stays in the middle
+            g.fill(-1, -1, 1, 1, 0xCC101010);
+        } finally {
+            g.pose().popMatrix();
+        }
     }
 
     private void renderLyrics(GuiGraphicsExtractor g, Minecraft mc, SmtcConfig cfg, int width,
-                              LyricLayout layout, TrackInfo track, LyricTrack lyrics, float dt) {
-        int blockTop = BASE_H + LYRIC_GAP;
-        int bandBottom = blockTop + layout.rows * layout.blockH + LYRIC_BOTTOM_PAD;
+                              int headerH, int rows, LyricLayout layout, TrackInfo track,
+                              LyricTrack lyrics, float dt) {
+        int blockTop = headerH + LYRIC_GAP;
+        int bandBottom = blockTop + rows * layout.blockH + LYRIC_BOTTOM_PAD;
         int centerX = width / 2;
         int innerW = width - PAD * 2;
         Identifier fontId = lyricFontId(cfg);
@@ -491,13 +544,22 @@ public final class NowPlayingHud implements HudElement {
         int lyricColor = Draw.color(cfg.lyricColor, textColor);
         int karaokeColor = Draw.color(cfg.karaokeColor, Draw.color(cfg.accentColor, 0xFF3FDC6E));
         int quietColor = Draw.withAlpha(lyricColor, 0.55f);
+        // The translation has its own colour now, and the slot that previews the next
+        // line when there is no translation has a second one: both used to borrow the
+        // lyric and dim colours, so a song with a tinted translation could not be told
+        // from the row above it.
+        int translationColor = Draw.color(cfg.translationColor, lyricColor);
+        int candidateColor = Draw.color(cfg.candidateColor, dimColor);
 
-        // hairline between the track block and the lyrics
-        g.fill(PAD, BASE_H - 1, width - PAD, BASE_H, Draw.withAlpha(0xFFFFFF, 0.10f));
+        // hairline between the track block and the lyrics; a lyrics-only panel has no
+        // track block to separate
+        if (headerH > 0) {
+            g.fill(PAD, headerH - 1, width - PAD, headerH, Draw.withAlpha(0xFFFFFF, 0.10f));
+        }
 
         if (lyrics == null || lyrics.isEmpty()) {
             String hint = lyricHint(track);
-            int rowY = blockTop + (layout.rows * layout.blockH) / 2 - 4;
+            int rowY = blockTop + (rows * layout.blockH) / 2 - 4;
             LyricsRenderer.drawCentered(g, font, LyricsRenderer.fit(font, hint, innerW, look),
                     centerX, rowY, Draw.withAlpha(dimColor, 0.70f), look, layout.lyricScale);
             animator.snap(0);
@@ -533,7 +595,7 @@ public final class NowPlayingHud implements HudElement {
             animatorKey = key;
             animator.snap(base);
             // one place says 'a new song starts clean': the clock's own track check
-            // would do it implicitly, but then reset() had no production caller (R25-2)
+            // would do it implicitly, but then reset() had no production caller (AUDIT-25-2)
             lyricClock.reset();
             scrollRow = Integer.MIN_VALUE;
             scrollX = 0.0f;
@@ -569,7 +631,7 @@ public final class NowPlayingHud implements HudElement {
             if (line == null) continue;
             int rowY = Math.round(blockTop + (k - offset) * layout.blockH);
             float alpha = Math.min(
-                    LyricsRenderer.smooth((rowY - BASE_H) / fade),
+                    LyricsRenderer.smooth((rowY - headerH) / fade),
                     LyricsRenderer.smooth((bandBottom - (rowY + layout.blockH)) / fade));
             if (alpha <= 0.02f) continue;
 
@@ -589,7 +651,7 @@ public final class NowPlayingHud implements HudElement {
             String shown = line.text();
 
             // One metric per row: rows with word timings are driven by the renderer
-            // (glyph pixels), the rest by the time fraction below (R26-5).
+            // (glyph pixels), the rest by the time fraction below (AUDIT-26-5).
             boolean hasWords = cfg.wordTiming && line.words() != null;
             if (inside) {
                 float played = Math.max(0.0f, Math.min(1.0f,
@@ -615,7 +677,7 @@ public final class NowPlayingHud implements HudElement {
                         // A row leaving the stage keeps its own offset; only the
                         // "let the renderer follow" case may carry -1, and a word-timed
                         // row is exactly that case. Passing -1 for a row that has no
-                        // offset pushed a finished line to its tail (R26-7).
+                        // offset pushed a finished line to its tail (AUDIT-26-7).
                         null, position, hasWords ? -1.0f
                                 : (index == handoverRow ? handoverOffset : 0.0f));
             } else {
@@ -628,8 +690,8 @@ public final class NowPlayingHud implements HudElement {
             int transY = rowY + layout.lineH;
             if (line.hasTranslation()) {
                 int color = inside || handover
-                        ? Draw.withAlpha(lyricColor, 0.92f)
-                        : Draw.withAlpha(dimColor, 0.78f);
+                        ? Draw.withAlpha(translationColor, 0.92f)
+                        : Draw.withAlpha(translationColor, 0.78f);
                 LyricsRenderer.marqueeCentered(g, font, line.translation(), centerX, transY,
                         transBudget, Draw.scaleAlpha(color, alpha), look, layout.transScale,
                         clock, marquee);
@@ -643,7 +705,7 @@ public final class NowPlayingHud implements HudElement {
                 if (next != null && !next.text().isEmpty()) {
                     LyricsRenderer.marqueeCentered(g, font, next.text(), centerX, transY,
                             transBudget,
-                            Draw.scaleAlpha(Draw.withAlpha(dimColor, 0.80f), alpha), look,
+                            Draw.scaleAlpha(Draw.withAlpha(candidateColor, 0.80f), alpha), look,
                             layout.transScale, clock, marquee);
                 }
             }

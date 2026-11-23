@@ -7,7 +7,11 @@
   "authors": [
     "123xzxc"
   ],
-  "contact": {},
+  "contact": {
+    "homepage": "https://github.com/123xzxc/SMTCraft",
+    "sources": "https://github.com/123xzxc/SMTCraft",
+    "issues": "https://github.com/123xzxc/SMTCraft/issues"
+  },
   "license": "MIT (third-party portions Apache-2.0, see THIRD_PARTY_NOTICES.md, bundled as THIRD_PARTY_NOTICES_smtcraft.md)",
   "icon": "assets/smtcraft/icon.png",
   "environment": "client",
@@ -27,5 +31,10 @@
   },
   "suggests": {
     "modmenu": "*"
+  },
+  "custom": {
+    "modmenu": {
+      "update_checker": true
+    }
   }
 }

@@ -12,7 +12,7 @@ public final class MediaBridges {
 
     public static MediaBridge create(SmtcConfig config) {
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        // startsWith, not contains: "Darwin" has no business matching Windows (R5-13)
+        // startsWith, not contains: "Darwin" has no business matching Windows (AUDIT-51-3)
         if (os.startsWith("windows")) return new SmtcBridge(config);
         if (os.contains("linux")) return new MprisBridge(config);
         return new NullBridge("no media reader for " + System.getProperty("os.name", "this platform")

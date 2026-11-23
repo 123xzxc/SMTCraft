@@ -22,13 +22,15 @@ import java.util.function.Consumer;
  * {@code %LOCALAPPDATA%\Microsoft\Windows\Fonts}; both are scanned, once per
  * session, and filtered by the search box.</p>
  */
-public final class FontPickerScreen extends Screen {
+public final class FontPickerScreen extends ScaledScreen {
     private static final int PER_PAGE = 10;
     private static List<Path> cache;
 
     private final Screen parent;
     private final String labelKey;
     private final Consumer<String> onPick;
+    /** Whether this picker follows the game's GUI scale, like the page that opened it. */
+    private final boolean followScale;
 
     private final List<Path> matches = new ArrayList<>();
     private int page;
@@ -40,8 +42,9 @@ public final class FontPickerScreen extends Screen {
     /** The search box keeps the keyboard after a rebuild, or typing stops after one key. */
     private boolean searchFocused;
 
-    public FontPickerScreen(Screen parent, String labelKey, Consumer<String> onPick) {
+    public FontPickerScreen(Screen parent, String labelKey, Consumer<String> onPick, boolean followScale) {
         super(Component.translatable("smtcraft.fontpicker.title"));
+        this.followScale = followScale;
         this.parent = parent;
         this.labelKey = labelKey;
         this.onPick = onPick;
@@ -89,8 +92,9 @@ public final class FontPickerScreen extends Screen {
 
     @Override
     protected void init() {
-        int w = Math.min(this.width - 24, 340);
-        int left = (this.width - w) / 2;
+        refreshUi(followScale);
+        int w = Math.min(vw() - 24, 340);
+        int left = (vw() - w) / 2;
 
         search = addRenderableWidget(new EditBox(this.font, left, 30, w, 18,
                 Component.translatable("smtcraft.fontpicker.search")));
@@ -142,7 +146,7 @@ public final class FontPickerScreen extends Screen {
                         b -> {
                             if (this.minecraft != null) this.minecraft.setScreenAndShow(parent);
                         })
-                .bounds(left + w - 50, this.height - 26, 50, 16).build());
+                .bounds(left + w - 50, vh() - 26, 50, 16).build());
     }
 
     /** Relabel the fixed row buttons for the current page; hidden when out of range. */
@@ -180,25 +184,15 @@ public final class FontPickerScreen extends Screen {
         }
     }
 
-    /** 26.1 up to 26.4-snapshot-4 hand the pointer along with the frame. */
-    public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        draw(g, mouseX, mouseY, partialTick);
-    }
-
-    /** 26.4-snapshot-5 and later hand over the extractor, which carries the pointer itself. */
-    public void extractRenderState(GuiGraphicsExtractor g) {
-        draw(g, ScreenHooks.mouseX(g, 0), ScreenHooks.mouseY(g, 0), ScreenHooks.partialTicks(g, 0.0f));
-    }
-
-    private void draw(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        ScreenHooks.drawBackground(this, g, mouseX, mouseY, partialTick);
-        g.centeredText(this.font, this.title.getString(), this.width / 2, 10, 0xFFFFFFFF);
+    @Override
+    protected void drawFrame(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        g.centeredText(this.font, this.title.getString(), vw() / 2, 10, 0xFFFFFFFF);
         g.centeredText(this.font, Component.translatable(labelKey).getString(),
-                this.width / 2, this.height - 40, 0xFFB8BCC4);
+                vw() / 2, vh() - 40, 0xFFB8BCC4);
         String count = matches.size() + " / " + fonts().size() + "   page " + (page + 1)
                 + "/" + Math.max(1, (matches.size() + PER_PAGE - 1) / PER_PAGE);
-        int w = Math.min(this.width - 24, 340);
-        g.text(this.font, count, (this.width - w) / 2, this.height - 14, 0xFF9FB2C8);
+        int w = Math.min(vw() - 24, 340);
+        g.text(this.font, count, (vw() - w) / 2, vh() - 14, 0xFF9FB2C8);
     }
 
     @Override

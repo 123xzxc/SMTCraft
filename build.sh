@@ -64,8 +64,22 @@ if [ ! -f "$MC_CLIENT" ]; then
   echo "  copy the 26.1 client jar there, or set SMTCRAFT_MC_CLIENT=<path to client.jar>" >&2
   exit 2
 fi
+# The dependency set has to belong to the client jar. $TC/mc-libs is the newest supported
+# version's set and carries org.lwjgl.sdl, which 26.1 does not have: compiled against it, a
+# 26.1 target resolves the wheel backend to "sdl" - an answer that version can never give at
+# runtime, so the probe's assertion would pass without distinguishing anything (R32-1).
+case "$MC_CLIENT" in
+  *26.1*|*26.2*) LIBS="${SMTCRAFT_MC_LIBS:-$TC/mc-libs-26.1}" ;;
+  *) LIBS="${SMTCRAFT_MC_LIBS:-$TC/mc-libs}" ;;
+esac
+if [ ! -d "$LIBS" ]; then
+  echo "dependency set missing: $LIBS" >&2
+  echo "  build it from the client jar's libraries, or set SMTCRAFT_MC_LIBS=<dir with *.jar>" >&2
+  exit 2
+fi
+echo "libs      : $LIBS"
 CP="$(hostpath "$MC_CLIENT")$SEP$(hostpath "$TC/fabric-loader-0.20.1.jar")"
-for jar in "$TC"/mc-libs/*.jar "$TC"/apijars/META-INF/jars/*.jar "$TC"/modmenu-*.jar; do
+for jar in "$LIBS"/*.jar "$TC"/apijars/META-INF/jars/*.jar "$TC"/modmenu-*.jar; do
   if [ -f "$jar" ]; then
     CP="$CP$SEP$(hostpath "$jar")"
   fi
@@ -80,6 +94,12 @@ if [ ! -d "$STAGE" ] && [ -e "$STAGE" ]; then
   echo "staging path exists and is not a directory: $STAGE" >&2; exit 1
 fi
 rm -rf "$STAGE"
+mkdir -p "$STAGE"
+# Everything below builds inside `cd "$OUT/classes"`, so a relative staging path stops
+# meaning the same directory there and jar fails on the manifest first (R33-6). Resolve
+# it once, in the drive-letter form the Windows JDK understands.
+STAGE="$(cd "$STAGE" && { pwd -W 2>/dev/null || pwd; })"
+OUT="$STAGE/direct"
 mkdir -p "$OUT/classes" "$HERE/build/libs"
 
 mapfile -t SOURCES < <(find "$HERE/src/main/java" -name '*.java' | sort)
@@ -90,7 +110,10 @@ echo "sources   : ${#SOURCES[@]}"
   -cp "$CP" -d "$OUT/classes" "${SOURCES[@]}"
 
 cp -r "$HERE/src/main/resources/." "$OUT/classes/"
-sed -i "s/[$]{version}/$VER/g" "$OUT/classes/fabric.mod.json"
+# tmp + mv, not "sed -i": BSD sed demands a backup suffix after -i, and the first
+# non-GNU host died right here (R32-5).
+sed "s/[$]{version}/$VER/g" "$OUT/classes/fabric.mod.json" > "$OUT/fabric.mod.json.tmp"
+mv -f "$OUT/fabric.mod.json.tmp" "$OUT/classes/fabric.mod.json"
 cp "$HERE/LICENSE" "$OUT/classes/LICENSE_$NAME"
 # Apache-2.0 attribution for the ported lyric parsers must travel with the jar
 [ -f "$HERE/THIRD_PARTY_NOTICES.md" ] && cp "$HERE/THIRD_PARTY_NOTICES.md" "$OUT/classes/THIRD_PARTY_NOTICES_$NAME.md"
@@ -100,7 +123,27 @@ cp "$HERE/LICENSE" "$OUT/classes/LICENSE_$NAME"
 printf 'Manifest-Version: 1.0\r\nEnable-Native-Access: ALL-UNNAMED\r\n\r\n' > "$OUT/MANIFEST.MF"
 # The file name states the range this one jar covers: 26.1 through 26.4.
 JARNAME="$NAME-$VER+mc26.1-26.4.jar"
-"$JAR" --create --file "$STAGE/$JARNAME" --manifest "$OUT/MANIFEST.MF" \
-  -C "$OUT/classes" .
+# Reproducible on purpose (R31-9): jar stores every entry's mtime, so two builds of one tree came
+# out the same size and with different md5 - which reads as tampering to anyone who re-checks a
+# published checksum. A fixed date plus a sorted entry list makes the bytes depend on the tree and
+# nothing else, so the md5 this script prints can be reproduced by anyone.
+STAMP="2026-01-01T00:00:00Z"
+mapfile -t ENTRIES < <(cd "$OUT/classes" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)
+# jar's -C applies to the operand that follows it, not to a list, so the walk happens inside the
+# class tree and every entry is named relative to it (a list after -C is looked up in the current
+# directory instead, which fails on the first class).
+( cd "$OUT/classes" && "$JAR" --create --file "$STAGE/$JARNAME" --manifest "$OUT/MANIFEST.MF" \
+  --date="$STAMP" "${ENTRIES[@]}" )
 cp "$STAGE/$JARNAME" "$HERE/build/libs/$JARNAME"
 echo "built     : build/libs/$JARNAME ($(wc -c < "$HERE/build/libs/$JARNAME") bytes)"
+# A command substitution that fails does not trip "set -e" - it is an argument to echo, so the
+# first host without md5sum printed an empty checksum and exited 0 (R32-5).
+if command -v md5sum >/dev/null 2>&1; then
+  MD5="$(md5sum "$HERE/build/libs/$JARNAME" | cut -d' ' -f1)"
+elif command -v md5 >/dev/null 2>&1; then
+  MD5="$(md5 -q "$HERE/build/libs/$JARNAME")"
+else
+  MD5="unavailable"
+  echo "warning: no md5 tool on this host, so the checksum cannot be shown" >&2
+fi
+echo "md5       : $MD5 (fixed --date, sorted entries: re-running this build reproduces it)"

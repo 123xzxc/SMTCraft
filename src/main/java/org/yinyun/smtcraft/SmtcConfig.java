@@ -33,7 +33,7 @@ public final class SmtcConfig {
      * the mtime of the file on disk, or an explicit "not known" — because the poll
      * treats it as authoritative. Leaving the previous stamp in place was a third
      * state, and it made the next poll read our own fresh write and copy it over any
-     * edit the player made in that half second (R19-2).
+     * edit the player made in that half second (AUDIT-19-2).
      */
     private static final long MTIME_UNKNOWN = -1L;
     /** True while a background reload is in flight, so ticks cannot pile up reads. */
@@ -44,14 +44,14 @@ public final class SmtcConfig {
      * shutdown finisher, read on the render thread by the settings screen — so it is
      * volatile like its two neighbours. A slightly stale diagnostic string would not
      * hurt anyone; three fields of the same class where two are volatile and the
-     * third is bare is what the next change copies wrong (R18-2).
+     * third is bare is what the next change copies wrong (AUDIT-18-2).
      */
     private transient volatile String lastSaveError = "";
     /**
      * What the footer shows. The raw text above is a log line — an exception class,
      * a path, an OS message — and it has no business inside a Chinese status bar:
      * it produced lines like "正在读取 … ! save failed: IOException: 拒绝访问。" while
-     * the three {@code smtcraft.settings.save.*} keys sat unused (R19-3). The footer
+     * the three {@code smtcraft.settings.save.*} keys sat unused (AUDIT-19-3). The footer
      * now prints the category, the details stay in the log.
      */
     private transient volatile Problem lastProblem = Problem.NONE;
@@ -69,7 +69,7 @@ public final class SmtcConfig {
          * The file was readable but its JSON did not parse, so it was kept as
          * {@code smtcraft.json.bad-<ms>} and the defaults were used instead. Not
          * {@code UNREADABLE}: since R20-1 moved the stat failure out of this branch,
-         * the bytes were read fine — it is the parse that failed (R21-4).
+         * the bytes were read fine — it is the parse that failed (AUDIT-21-4).
          */
         PARSE_FAILED
     }
@@ -87,13 +87,50 @@ public final class SmtcConfig {
     public boolean hideWhenNoSession = true;
     public boolean hideWhenPaused = false;
 
+    /**
+     * Draw the lyric band alone: no cover, no title / artist / album, no progress bar,
+     * no timestamps. The panel shrinks to the height of the band, so the lyrics can sit
+     * under another overlay without a header block pushing them down. A session that
+     * publishes no lyrics still gets the full panel - an empty band says nothing.
+     */
+    public boolean lyricsOnly = false;
+
+    /** Hide the panel while any screen is open (inventory, settings, chat, pause). */
+    public boolean hideWhenScreenOpen = false;
+
     /** top-left, top-right, bottom-left, bottom-right, center. */
     public String anchor = "top-left";
     public int offsetX = 8;
     public int offsetY = 8;
     public float scale = 1.0f;
+    /**
+     * Draw the panel and the settings pages at the size they were designed for, whatever
+     * the game's GUI scale is.
+     *
+     * <p>They are laid out for GUI scale 2. At scale 4 the logical window is half as wide,
+     * so a tab folds into a 10 px pitch and the panel covers twice the glass; at scale 1 the
+     * opposite. On by default, because a page that does not fit is not a matter of taste.</p>
+     */
+    public boolean followGuiScale = true;
+
+    /**
+     * Ask GitHub for the newest release tag, at most once every six hours.
+     *
+     * <p>The only network call this mod makes: it reads a public page, sends nothing about
+     * the player and installs nothing. Turning it off cancels the request entirely, so the
+     * about tab and the Mod Menu badge then report that they have no answer rather than
+     * looking (AUDIT-46-6).</p>
+     */
+    public boolean checkUpdates = true;
     public int panelWidth = 300;
     public float backgroundOpacity = 0.62f;
+
+    /**
+     * Opacity of the 1 px panel border, independent of {@link #backgroundOpacity}. The border
+     * used to be a fixed 10% white line, which stayed visible as a hard edge once the panel
+     * itself was made nearly transparent.
+     */
+    public float borderOpacity = 0.10f;
     public boolean shadow = true;
     public String textColor = "#FFFFFF";
     public String dimTextColor = "#B8BCC4";
@@ -130,6 +167,22 @@ public final class SmtcConfig {
     public static final int MIN_CORNER_RADIUS = 0;
     public static final int MAX_CORNER_RADIUS = 24;
 
+    /**
+     * Round the flat cover's corners at all; the radius below only applies while this is on.
+     * A switch as well as a radius, because 0 is hard to hit with a slider.
+     */
+    public boolean artRound = true;
+
+    /**
+     * Corner radius of the flat cover, in HUD pixels. Baked into the cover texture, so it
+     * only applies while the vinyl disc is off; a disc has no corners to round.
+     */
+    public int artRadius = 4;
+
+    /** Range the cover-radius slider offers and {@link #normalise()} accepts. */
+    public static final int MIN_ART_RADIUS = 0;
+    public static final int MAX_ART_RADIUS = 12;
+
     // --- audio -------------------------------------------------------------
     /** Silence vanilla background music while a SMTC track is playing. */
     public boolean muteGameMusic = true;
@@ -156,6 +209,16 @@ public final class SmtcConfig {
     public String lyricColor = "#FFFFFF";
     /** Colour of the already-sung part (karaoke sweep). */
     public String karaokeColor = "#3FDC6E";
+    /**
+     * Colour of the translation line under a sung row. The row that is being sung draws
+     * it at 92% alpha, every other row at 78%, so one hue still reads as two depths.
+     */
+    public String translationColor = "#FFFFFF";
+    /**
+     * Colour of the second slot when the current line carries no translation: the next
+     * line is previewed there instead (dual-line fallback).
+     */
+    public String candidateColor = "#B8BCC4";
 
     /**
      * Colour keys the player edited by hand (comma separated). A theme change only
@@ -267,7 +330,7 @@ public final class SmtcConfig {
     private transient Path path;
     /**
      * Bumped every time a save lands. A reload that started before one must not
-     * copy its older snapshot over the newer state (R17-1): the two paths are
+     * copy its older snapshot over the newer state (AUDIT-17-1): the two paths are
      * asynchronous, the write runs immediately on its lane while the hand-back
      * waits for the next client tick, so "reload first, save second" happens
      * whenever the stat of a poll overlaps a slider already on its way to disk.
@@ -277,7 +340,7 @@ public final class SmtcConfig {
      * {@link #saveNow()} on whatever thread called it (startup, the shutdown
      * finisher, tests), so two writers can be inside the same increment. A lost
      * bump makes an older snapshot look current and hands the R17-1 protection back
-     * to the very race it was added for (R18-2).
+     * to the very race it was added for (AUDIT-18-2).
      */
     private final transient AtomicInteger saveGeneration = new AtomicInteger();
 
@@ -295,7 +358,7 @@ public final class SmtcConfig {
     /**
      * True when a save landed after the snapshot that produced {@code captured}.
      * Split out of the reload hand-back so the decision can be exercised without a
-     * live bus, a client thread or a file system (R18-3).
+     * live bus, a client thread or a file system (AUDIT-18-3).
      */
     static boolean staleSnapshot(int captured, int current) {
         return captured != current;
@@ -334,7 +397,7 @@ public final class SmtcConfig {
             // The stamp is not part of "can this file be parsed": a scanner holding the
             // file for a moment makes stat fail while the JSON in hand is perfectly
             // good, and sharing one catch with the parse used to rename that good file
-            // to .bad-<ms> and start over from the defaults (R20-1). An unknown stamp is
+            // to .bad-<ms> and start over from the defaults (AUDIT-20-1). An unknown stamp is
             // already a state this class understands, and the next poll adopts it.
             long stamp = 0L;
             try {
@@ -363,7 +426,9 @@ public final class SmtcConfig {
         scale = clamp(scale, 0.5f, 3.0f);
         panelWidth = (int) Math.round(clamp(panelWidth, 120, 470));
         backgroundOpacity = clamp(backgroundOpacity, 0.0f, 1.0f);
+        borderOpacity = clamp(borderOpacity, 0.0f, 1.0f);
         cornerRadius = (int) Math.round(clamp(cornerRadius, MIN_CORNER_RADIUS, MAX_CORNER_RADIUS));
+        artRadius = (int) Math.round(clamp(artRadius, MIN_ART_RADIUS, MAX_ART_RADIUS));
         offsetX = (int) Math.round(clamp(offsetX, -4096, 4096));
         offsetY = (int) Math.round(clamp(offsetY, -4096, 4096));
         lyricLines = (int) Math.round(clamp(lyricLines, 0, 4));
@@ -457,7 +522,7 @@ public final class SmtcConfig {
             // failure: reading the mtime back is a second disk access that fails on
             // its own (a concurrent delete, a scanner holding the path), and it used
             // to land in the catch below — the file was fine while the footer said
-            // "save failed" (R18-2).
+            // "save failed" (AUDIT-18-2).
             long mtime = 0L;
             try {
                 mtime = Files.getLastModifiedTime(path).toMillis();
@@ -525,7 +590,7 @@ public final class SmtcConfig {
         // The latch only covers stat + read. Keeping it set until the client callback
         // ran meant one rejected submission disabled hot reload until the game was
         // restarted; resetting it at the submission layer and before the hand-back
-        // leaves no path where it can stay raised (R4-1).
+        // leaves no path where it can stay raised (AUDIT-41).
         if (!Async.run("config poll", this::pollReloadOnce)) {
             reloading = false;
         }
@@ -557,7 +622,7 @@ public final class SmtcConfig {
             // is older than the file on disk, and copying it in would leave memory
             // behind while loadedMtime says "in sync", so no later poll ever reads
             // the file again — the user's change would be lost on the next save
-            // (R17-1).
+            // (AUDIT-17-1).
             if (staleSnapshot(gen, saveGeneration.get())) return;
             try {
                 SmtcConfig read = GSON.fromJson(text, SmtcConfig.class);
@@ -576,7 +641,7 @@ public final class SmtcConfig {
      * When the last save could not read the stamp back, the file on disk is known to
      * be ours but its mtime is not — so the next poll adopts the stamp and skips one
      * round instead of reading our own write and copying it over whatever the player
-     * changed in the meantime (R19-2). Returns true when this round was skipped.
+     * changed in the meantime (AUDIT-19-2). Returns true when this round was skipped.
      */
     private boolean adoptUnknownStamp() {
         if (loadedMtime != MTIME_UNKNOWN) return false;

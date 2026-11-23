@@ -38,17 +38,17 @@ public final class MprisBridge implements MediaBridge {
     /** Consecutive empty replies before the session bus is treated as dead. */
     private static final int RECONNECT_AFTER = 5;
     /**
-     * How long one round may spend asking players who they are (R5-4).
+     * How long one round may spend asking players who they are (AUDIT-54).
      *
      * <p>It is also handed down as the reply timeout of each {@code GetAll}, so
      * the budget is a deadline instead of a check between two calls that could
-     * each burn the full bus timeout (R6-2). A probe on a live bus answers in
+     * each burn the full bus timeout (AUDIT-62). A probe on a live bus answers in
      * milliseconds, so a round still gets through several players.</p>
      */
     private static final long PROBE_BUDGET_MS = 600L;
-    /** Reply timeout for the position/identity reads once a player is chosen (R6-2). */
+    /** Reply timeout for the position/identity reads once a player is chosen (AUDIT-62). */
     private static final int QUERY_TIMEOUT_MS = 500;
-    /** Players are re-enumerated more slowly when nobody is on the bus (R5-8). */
+    /** Players are re-enumerated more slowly when nobody is on the bus (AUDIT-58). */
     private static final long EMPTY_NAMES_REFRESH_MS = 3_000L;
     private static final long RECONNECT_MIN_MS = 500L;
     private static final long RECONNECT_MAX_MS = 30_000L;
@@ -88,12 +88,12 @@ public final class MprisBridge implements MediaBridge {
     private int artMisses;
     /**
      * URL whose cover was already taken; success is a state, not a non-failure
-     * (R6-1).
+     * (AUDIT-61).
      *
      * <p>Invariant: it belongs to the same state as {@link #artUrl} and
      * {@link #artworkHash}, so every place that clears one has to clear this too.
      * The "show artwork" switch was the entry that forgot, and every later round
-     * then returned early for the rest of the song (R7-2).</p>
+     * then returned early for the rest of the song (AUDIT-72).</p>
      */
     private String artDoneUrl = "";
 
@@ -151,7 +151,7 @@ public final class MprisBridge implements MediaBridge {
      *
      * <p>The whole shutdown sequence has a budget of its own, so one bridge may
      * not spend the entire {@link MediaBridge#CLOSE_GRACE_MS} and starve the steps
-     * after it (R7-6). The thread is interrupted first either way and closes its
+     * after it (AUDIT-76). The thread is interrupted first either way and closes its
      * own bus and arena in its {@code finally} block whatever happens here.</p>
      */
     @Override
@@ -162,7 +162,7 @@ public final class MprisBridge implements MediaBridge {
         if (t != null) {
             t.interrupt();
             try {
-                // join(0) waits forever, so the floor is one millisecond, not zero (R9-2)
+                // join(0) waits forever, so the floor is one millisecond, not zero (AUDIT-92)
                 t.join(Math.max(Budgets.MIN_WAIT_MS,
                         Math.min(budgetMs, MediaBridge.CLOSE_GRACE_MS)));
             } catch (InterruptedException e) {
@@ -186,7 +186,7 @@ public final class MprisBridge implements MediaBridge {
                         long now = System.currentTimeMillis();
                         if (now < reconnectAt) {
                             // retrying every poll would open a connection per tick
-                            // while the daemon is down (R5-9)
+                            // while the daemon is down (AUDIT-59)
                             lastSampleAt = now;
                             sampleCount++;
                             lastError = "dbus: reconnecting";
@@ -202,15 +202,15 @@ public final class MprisBridge implements MediaBridge {
                         } catch (IllegalStateException e) {
                             // the outer catch backs off once already; backing off
                             // here too stepped twice per failure and hit the 30 s
-                            // ceiling in four attempts instead of seven (R6-6)
+                            // ceiling in four attempts instead of seven (AUDIT-66)
                             throw e;
                         }
                     }
                     // cleared before sampling so a note written by publishEmpty
-                    // survives the round (R5-2)
+                    // survives the round (AUDIT-52)
                     lastError = "";
                     // per-round, not per-call: a failure early in the round has to
-                    // stay readable after the reads that follow it (R7-3)
+                    // stay readable after the reads that follow it (AUDIT-73)
                     bus.clearError();
                     sample(bus, cfg);
                     lastSampleAt = System.currentTimeMillis();
@@ -222,7 +222,7 @@ public final class MprisBridge implements MediaBridge {
                         lastError = "dbus: " + busError;
                         // only a connection-level failure is worth reopening the bus
                         // for; a player answering "no such property" would otherwise
-                        // drop the connection every five rounds (R7-3)
+                        // drop the connection every five rounds (AUDIT-73)
                         if (bus.transportFailed() && ++busFailures >= RECONNECT_AFTER) {
                             LOG.warn("MPRIS session bus stopped answering ({}), reconnecting", busError);
                             busFailures = 0;
@@ -238,7 +238,7 @@ public final class MprisBridge implements MediaBridge {
                 } catch (Throwable t) {
                     lastError = describe(t);
                     // a failed round is not a track change: publishEmpty keeps the
-                    // current card until swapGraceMs has passed (R5-7)
+                    // current card until swapGraceMs has passed (AUDIT-57)
                     publishEmpty(cfg, lastError);
                     backoff();
                     if (bus != null) {
@@ -283,10 +283,10 @@ public final class MprisBridge implements MediaBridge {
             }
             names = players;
             namesAt = now;
-            // a player that left must not keep its identity cached forever (R5-10).
+            // a player that left must not keep its identity cached forever (AUDIT-51-0).
             // The cache is keyed by app name while the bus names are not, so the
             // live set has to be mapped first: comparing raw names emptied the
-            // whole cache every refresh and re-asked Identity forever (R6-3)
+            // whole cache every refresh and re-asked Identity forever (AUDIT-63)
             Set<String> live = new HashSet<>();
             for (String player : players) live.add(MprisTrack.filterName(player));
             identities.keySet().retainAll(live);
@@ -294,7 +294,7 @@ public final class MprisBridge implements MediaBridge {
         }
         if (names.isEmpty()) {
             // an empty list from a broken bus is not an idle desktop, and saying so
-            // is what makes a Position timeout diagnosable later (R7-3)
+            // is what makes a Position timeout diagnosable later (AUDIT-73)
             String busError = bus.lastError();
             publishEmpty(cfg, busError.isEmpty()
                     ? "no MPRIS player on the session bus"
@@ -328,7 +328,7 @@ public final class MprisBridge implements MediaBridge {
      * <p>Each probe is a blocking {@code GetAll} that can burn the full bus
      * timeout, so the round is bounded by {@link #PROBE_BUDGET_MS} rather than by
      * the number of players: with ten players and a dead one in the list, an
-     * unbudgeted loop took twenty seconds a round (R5-4). The order starts at the
+     * unbudgeted loop took twenty seconds a round (AUDIT-54). The order starts at the
      * current player (stickiness) and rotates through the rest, so every player
      * is eventually examined without letting the card hop between two of them.</p>
      */
@@ -343,7 +343,7 @@ public final class MprisBridge implements MediaBridge {
             long remaining = deadline - System.currentTimeMillis();
             if (probed > 0 && remaining <= 0L) break;
             // the reply timeout is what is left of the budget, so an unreachable
-            // player cannot spend the round on its own (R6-2)
+            // player cannot spend the round on its own (AUDIT-62)
             int timeout = (int) Math.max(60L, Math.min(MprisBus.TIMEOUT_MS,
                     remaining > 0L ? remaining : PROBE_BUDGET_MS));
             // a player can drop off the bus between listNames and GetAll; the
@@ -385,7 +385,7 @@ public final class MprisBridge implements MediaBridge {
 
     private String identity(MprisBus bus, String name) {
         // keyed by app, not by bus name: a player restarting as .instance1234 is
-        // the same identity, and the old key would leak (R5-10)
+        // the same identity, and the old key would leak (AUDIT-51-0)
         String base = MprisTrack.filterName(name);
         String cached = identities.get(base);
         if (cached != null) return cached;
@@ -418,7 +418,7 @@ public final class MprisBridge implements MediaBridge {
         artTriedAt = 0L;
         artMisses = 0;
         // artworkHash is the render side's cache key: leaving it behind kept a
-        // texture alive that no track referred to any more (R6-4)
+        // texture alive that no track referred to any more (AUDIT-64)
         artwork = new byte[0];
         artworkHash = "";
         smoother.reset();
@@ -467,14 +467,14 @@ public final class MprisBridge implements MediaBridge {
             }
             artUrl = "";
             // re-opening the switch has to be able to take the cover again, so the
-            // "already taken" state goes with the URL it referred to (R7-2)
+            // "already taken" state goes with the URL it referred to (AUDIT-72)
             artDoneUrl = "";
             return;
         }
         String url = snapshot.artUrl();
         if (url.isEmpty()) return;
         // success is a state of its own: without it the same cover was fetched
-        // again every ART_RETRY_MS for the whole song (R6-1)
+        // again every ART_RETRY_MS for the whole song (AUDIT-61)
         if (url.equals(artDoneUrl)) return;
         if (url.equals(artUrl) && artMisses >= ART_MAX_MISSES) return;
         if (!url.equals(artUrl)) {

@@ -8,6 +8,7 @@ import org.yinyun.smtcraft.render.NowPlayingHud;
 import org.yinyun.smtcraft.smtc.LyricService;
 import org.yinyun.smtcraft.util.Errors;
 import org.yinyun.smtcraft.util.Keys;
+import org.yinyun.smtcraft.util.Screens;
 import org.yinyun.smtcraft.util.WheelWatch;
 import org.yinyun.smtcraft.gui.ScreenHooks;
 import org.yinyun.smtcraft.gui.Widgets;
@@ -18,8 +19,10 @@ import org.yinyun.smtcraft.smtc.TrackInfo;
 import org.yinyun.smtcraft.util.Async;
 import org.yinyun.smtcraft.util.Budgets;
 import org.yinyun.smtcraft.util.ShutdownPlan;
+import org.yinyun.smtcraft.util.UpdateCheck;
 import org.yinyun.smtcraft.util.Watchdog;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
@@ -48,7 +51,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
      * Total time the shutdown sequence may take. Derived from the bridge round
      * instead of being picked on its own: 8 s looked generous until the bridge
      * constant became 10.5 s, after which the bridge could never receive the wait
-     * it promised itself (R8-1).
+     * it promised itself (AUDIT-81).
      */
     private static final long SHUTDOWN_BUDGET_MS = Budgets.SHUTDOWN_MS;
     /**
@@ -76,14 +79,14 @@ public final class SmtcCraftClient implements ClientModInitializer {
      * there: a dev environment reload and some launchers dispatch it twice. While
      * the sequence ran inline that was just a duplicated wait; now it starts a
      * thread, so a second dispatch would run {@code bridge.close()} twice at the
-     * same time (R12-2).
+     * same time (AUDIT-12-2).
      *
      * <p>One-shot on purpose: the latch is never reset, so a process that somehow
      * survives the first event (a reload in the same JVM, a launcher that retries
      * the stop event) will not close the bridge and the lyric worker a second
      * time. Supporting that would mean a real state machine
      * ({@code IDLE → CLOSING → CLOSED} with a reset after {@code CLOSING}), not a
-     * boolean — until then the repeated event is logged and dropped (R13-3).</p>
+     * boolean — until then the repeated event is logged and dropped (AUDIT-13-3).</p>
      */
     private final AtomicBoolean shuttingDown = new AtomicBoolean();
     private KeyMapping toggleKey;
@@ -94,6 +97,12 @@ public final class SmtcCraftClient implements ClientModInitializer {
     private boolean wheelWatch;
     /** Install attempts, so a backend that never becomes ready does not cost a lookup per tick. */
     private int wheelTries;
+    /** The startup log reaches the modifier numbers only once the game is past GLFW init. */
+    private boolean keysLogged;
+    private boolean screensLogged;
+    /** The release check is started once, on the first tick, and never again. */
+    private boolean updateKicked;
+    private boolean updateLogged;
     /** About ten seconds of ticks: enough for a slow world load, few enough to stop trying. */
     private static final int WHEEL_TRIES = 200;
     private double wheelSteps;
@@ -115,18 +124,30 @@ public final class SmtcCraftClient implements ClientModInitializer {
     private boolean fontInWorld;
     /**
      * Key numbers are asked for by name and read off the running build ({@link Keys#key}).
-     * 26.1 declares 341/345/296 for Ctrl and F7 - GLFW key codes - while 26.3 declares
-     * 224/228/64 for the same constants, because it indexes the SDL keyboard-state buffer
-     * by scancode. A number compiled into this class would be right on one version and
+     * 26.1 declares 341/345 for Ctrl - GLFW key codes - while 26.3 declares 224/228 for
+     * the same constants, because it indexes the SDL keyboard-state buffer by scancode. A number compiled into this class would be right on one version and
      * silently a different key on the rest, which is exactly what R28-1 caught. These
      * fallbacks only matter on a build that stopped declaring the field.
      */
     private static final int FALLBACK_LCONTROL = 341;
     private static final int FALLBACK_RCONTROL = 345;
-    private static final int FALLBACK_F7 = 296;
 
     public static SmtcCraftClient get() {
         return instance;
+    }
+
+    /**
+     * The version this jar declares, as Fabric resolved it out of {@code fabric.mod.json}.
+     * Empty when the container cannot be read, which only happens under a plain test runner.
+     */
+    public static String version() {
+        try {
+            return FabricLoader.getInstance().getModContainer("smtcraft")
+                    .map(container -> container.getMetadata().getVersion().getFriendlyString())
+                    .orElse("");
+        } catch (Throwable failed) {
+            return "";
+        }
     }
 
     public SmtcConfig config() {
@@ -202,18 +223,25 @@ public final class SmtcCraftClient implements ClientModInitializer {
 
         // One line says which of the four 26.1-26.4 differences this game build uses;
         // without it a crash report from a snapshot says nothing about the version.
+        // Mod Menu reads one answer and never asks again, so the look starts here rather
+        // than on the first tick: by the time the mod list opens, the reply is in. It is the
+        // only network call the mod makes, so the config can turn it off (AUDIT-46-6).
+        if (config.checkUpdates) {
+            UpdateCheck.request(version());
+        }
         LOG.info("game api: cover={}, screen={}, widget={}, key={}, wheel={}",
                 CoverTexture.mode(), ScreenHooks.mode(), Widgets.mode(), Keys.mode(), WheelWatch.mode());
-        // The numbers differ per version (R28-1), so the log carries the ones in use.
-        LOG.info("key codes: F7={}, LCONTROL={}, RCONTROL={}",
-                Keys.key("KEY_F7", FALLBACK_F7), Keys.key("KEY_LCONTROL", FALLBACK_LCONTROL),
-                Keys.key("KEY_RCONTROL", FALLBACK_RCONTROL));
-
+        // The modifier numbers differ per version (AUDIT-28-1) and the log carries the ones in use,
+        // but reading them initialises com.mojang.blaze3d.platform.InputConstants, which on 26.1
+        // touches GLFW during its static init — fatal here, see the note below. They are logged
+        // from the first tick instead, when the window is long since up.
         hud = new NowPlayingHud(this);
         HudElementRegistry.addLast(
                 Identifier.fromNamespaceAndPath(MOD_ID, "now_playing"), hud);
-        installScrollWatch();
-
+        // The scroll watch waits for the first tick instead of installing here: it needs the
+        // window, reading the window initialises com.mojang.blaze3d.platform.Window, and that
+        // class touches GLFW - which 26.1 does not survive (GLX._initGlfw checks the GLFW error
+        // queue before initialising it, so any earlier GLFW contact kills startup).
         ClientTickEvents.END_CLIENT_TICK.register(this::onEndTick);
         ClientLifecycleEvents.CLIENT_STOPPING.register(mc -> {
             if (!shuttingDown.compareAndSet(false, true)) {
@@ -223,7 +251,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
             // The watchdog is what makes "no thread outlives the process" safe.
             // Checking the elapsed time after the sequence returns cannot cover
             // the case the check exists for — a native call that never returns
-            // never reaches that check (R13-1). This thread is independent of the
+            // never reaches that check (AUDIT-13-1). This thread is independent of the
             // finisher's control flow: it fires whether the sequence returns,
             // throws, or hangs, and the finisher interrupts it on the normal path
             // so an honest exit never waits those extra seconds.
@@ -234,7 +262,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
                 // System.err for its own stream and then closed it, or a logging
                 // framework that already stopped its appenders — and an exception
                 // in the second statement would skip the only statement this
-                // thread exists for (R14-2).
+                // thread exists for (AUDIT-14-2).
                 try {
                     // halt() runs no shutdown hooks, so the logging framework may
                     // still hold the reason in its buffer; stderr is unbuffered and
@@ -250,7 +278,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
                     // Non-zero: this path means the sequence did not finish in
                     // time, and halt(0) would report that as a clean exit to the
                     // launcher, the crash tracker and any script running us
-                    // (R14-2).
+                    // (AUDIT-14-2).
                     Runtime.getRuntime().halt(HALT_EXIT_UNFINISHED);
                 }
             });
@@ -258,13 +286,13 @@ public final class SmtcCraftClient implements ClientModInitializer {
             // the sound option through SoundEngine while the game is tearing the
             // audio device down, which is exactly the kind of call that can block,
             // and a watchdog armed after it would be no watchdog at all — the
-            // finisher would never start (R14-1).
+            // finisher would never start (AUDIT-14-1).
             // The volume restore sits outside the sequence, so it carries its own
             // catch: every step inside goes through step() and cannot take the
             // rest of the shutdown with it, and this one — which touches
             // SoundEngine, the client instance and the config — must not either.
             // Unguarded, a throw here would skip finisher.start() entirely and
-            // leave the watchdog to halt after 22 s with nothing written (R15-2).
+            // leave the watchdog to halt after 22 s with nothing written (AUDIT-15-2).
             try {
                 musicMuter.release();
             } catch (Throwable failed) {
@@ -274,7 +302,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
             // It used to run right here, on the client thread, which pumps no
             // messages while it waits: Windows greys the window out after five
             // seconds without a pump, so every round that made one wait longer
-            // also made the exit look frozen (R11-1). It now runs on a non-daemon
+            // also made the exit look frozen (AUDIT-11-1). It now runs on a non-daemon
             // thread — the JVM still waits for it before the process goes away,
             // so "no thread outlives the process" keeps holding, but the window
             // does not have to.
@@ -283,7 +311,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
             // and Runtime.exit run the shutdown hooks and then terminate every
             // thread without waiting, so on a crash or a forced quit this thread
             // can be cut off before "write the config" and "flush the offset
-            // table" (R14-4). Nothing can be done about the cut-off itself, which
+            // table" (AUDIT-14-4). Nothing can be done about the cut-off itself, which
             // is why finishShutdown writes the config once before it starts
             // waiting on anything.
             Thread finisher = new Thread(() -> {
@@ -309,7 +337,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
      * <p>One budget for the whole sequence: each step is reasonable on its own,
      * but 2 s plus a bridge round plus the lyric worker added up to more than ten
      * seconds on Linux, which reads as "closing hangs". Every step gets what is
-     * left of the budget instead (R7-6).</p>
+     * left of the budget instead (AUDIT-76).</p>
      *
      * <p>Two properties hold for everything in here, and any new step has to be
      * checked against both (R15-1, R15-2):</p>
@@ -328,7 +356,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
         long started = System.currentTimeMillis();
         // Now that the client thread no longer blocks here, "the process is still
         // up" is invisible unless it is said out loud: the window is gone and the
-        // only other evidence is a task manager entry (R12-1).
+        // only other evidence is a task manager entry (AUDIT-12-1).
         LOG.info("shutdown: stopping the bridge, the background lanes and the lyric worker");
         long deadline = started + SHUTDOWN_BUDGET_MS;
         // Hardening for R14-4: a Runtime.exit path can cut this thread off at any
@@ -339,7 +367,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
         // into place right now, and both writers end with ATOMIC_MOVE, so the slower
         // one wins the file. Writing first would let a stale state land after the
         // early write and stay there if the process is cut off before the third step
-        // (R15-1).
+        // (AUDIT-15-1).
         long drainStart = System.currentTimeMillis();
         boolean quiet = false;
         try {
@@ -352,7 +380,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
         // whether the queue ended up quiet: a timed-out drain returns false having
         // already burned its whole DRAIN_MS, and treating that as "not done yet" made
         // the first step pay for it a second time — the R18-1 leak survived on exactly
-        // the slow path it was written for (R19-1).
+        // the slow path it was written for (AUDIT-19-1).
         final long drainedMs = System.currentTimeMillis() - drainStart;
         final boolean drained = quiet;
         try {
@@ -381,10 +409,10 @@ public final class SmtcCraftClient implements ClientModInitializer {
         long deadline = started + SHUTDOWN_BUDGET_MS;
         // One action per step name, then a walk over {@link ShutdownPlan#steps()}.
         // The order is data now, so "is the config written after the drain" is a
-        // self-test rather than something a reviewer has to notice (R16-3).
+        // self-test rather than something a reviewer has to notice (AUDIT-16-3).
         Map<String, Runnable> actions = new LinkedHashMap<>();
         actions.put(ShutdownPlan.DRAIN, () -> {
-            // The early write drains before it writes (R15-1), so this step is the
+            // The early write drains before it writes (AUDIT-15-1), so this step is the
             // second chance at a line Budgets registers once: it may spend only what
             // the early attempt did not (R18-1, tightened by R19-1). A quiet queue means
             // nothing is left to wait for; a timed-out attempt means the line is already
@@ -399,7 +427,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
         // The bridge goes first among the waits and keeps a reserve for the
         // writes: it is the only step that can legitimately block for ten
         // seconds, and leaving it last handed it whatever the earlier steps had
-        // not already spent (R8-1).
+        // not already spent (AUDIT-81).
         actions.put(ShutdownPlan.BRIDGE, () -> {
             if (bridge != null) {
                 bridge.close(Math.max(Budgets.MIN_WAIT_MS,
@@ -422,7 +450,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
             // The loop below only walks the plan, so an action keyed by a name the
             // plan does not contain would sit in the map forever and never run —
             // the mirror image of a planned step with no action, which at least
-            // warns (R17-3).
+            // warns (AUDIT-17-3).
             LOG.warn("shutdown: {} actions for {} planned steps",
                     actions.size(), ShutdownPlan.steps().size());
         }
@@ -443,7 +471,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
      * rest. A bridge that refuses to stop must not take the config write with it:
      * before this, an unchecked exception anywhere in the sequence silently
      * skipped every step after it, and the config and the offset table stayed at
-     * their previous values (R12-1).
+     * their previous values (AUDIT-12-1).
      */
     private static void step(String what, Runnable action) {
         try {
@@ -487,10 +515,19 @@ public final class SmtcCraftClient implements ClientModInitializer {
                 || Keys.isKeyDown(Keys.key("KEY_RCONTROL", FALLBACK_RCONTROL));
     }
 
-    /** True while the offset key is held, through the mapping or, failing that, the raw state. */
+    /**
+     * True while the offset key is held. Only the mapping is consulted: it carries the player's
+     * binding, so rebinding the key in 选项 → 控制 moves the mod with it. An earlier version also
+     * OR-ed in the raw F7 state, which made F7 keep working after it had been rebound away and
+     * made the combo fire on the wrong key - the mapping is the single source of truth.
+     */
     private boolean offsetHeld() {
-        if (offsetKey != null && offsetKey.isDown()) return true;
-        return Keys.isKeyDown(Keys.key("KEY_F7", FALLBACK_F7));
+        return offsetKey != null && offsetKey.isDown();
+    }
+
+    /** The offset key as the player sees it, for the startup line. */
+    private String offsetName() {
+        return offsetKey == null ? "?" : offsetKey.getTranslatedKeyMessage().getString();
     }
 
     /**
@@ -518,6 +555,11 @@ public final class SmtcCraftClient implements ClientModInitializer {
      */
     private void installScrollWatch() {
         if (wheelWatch) return;
+        // Nothing here may touch the input backend before the game has a window: on 26.1
+        // loading the GLFW class loads its DLL, and a GLFW call before glfwInit makes
+        // GLX._initGlfw refuse to start at all ("GLFW error before init: [0x10001]").
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.getWindow() == null || client.getWindow().handle() == 0L) return;
         wheelWatch = WheelWatch.install(
                 this::offsetHeld,
                 steps -> {
@@ -526,12 +568,49 @@ public final class SmtcCraftClient implements ClientModInitializer {
                     }
                 });
         if (wheelWatch) {
-            LOG.info("mouse wheel watch: {}", WheelWatch.mode());
+            LOG.info("mouse wheel watch: {}", WheelWatch.route());
         }
     }
 
     private void onEndTick(Minecraft mc) {
         if (bridge == null) return;
+        // Reading the modifier key codes initialises InputConstants, which on 26.1 loads GLFW
+        // while GLX._initGlfw has not run yet — the game then dies with
+        // "GLFW error before init: [0x10001]". A tick is always after that point.
+        if (!keysLogged) {
+            keysLogged = true;
+            LOG.info("keys: offset={}, LCONTROL={}, RCONTROL={}", offsetName(),
+                    Keys.key("KEY_LCONTROL", FALLBACK_LCONTROL),
+                    Keys.key("KEY_RCONTROL", FALLBACK_RCONTROL));
+        }
+        // "hide while a screen is open" is the one option whose whole behaviour hangs on a
+        // reflective read: on a build where neither route resolves it silently stops working,
+        // and nothing else in the log would say so (AUDIT-34-4).
+        if (!screensLogged) {
+            screensLogged = true;
+            String route = Screens.probe();
+            if ("unavailable".equals(route)) {
+                LOG.warn("screens: unavailable (no Minecraft.screen field and no Gui.screen());"
+                        + " the hide-while-open option does nothing on this build");
+            } else {
+                LOG.info("screens: {}", route);
+            }
+        }
+        // A newer release is only news if something looks for it; the look is one request on a
+        // daemon thread, so the tick does not wait for the network. The Mod Menu badge and the
+        // about tab then read whatever answer arrives (AUDIT-45).
+        if (!updateKicked) {
+            updateKicked = true;
+            if (config.checkUpdates) {
+                UpdateCheck.request(version());
+            }
+        }
+        if (!updateLogged && UpdateCheck.state().known()) {
+            updateLogged = true;
+            UpdateCheck.State answer = UpdateCheck.state();
+            LOG.info("update: latest={}, available={}, note={}", answer.latest(),
+                    answer.available(), answer.note().isEmpty() ? "none" : answer.note());
+        }
         // GLFW only hands out a window handle once the window exists, and on 26.4 the SDL
         // event watch refused the first attempt outright, so a failed install is retried for
         // a while instead of being written off: ten seconds covers a slow world load.
@@ -542,7 +621,7 @@ public final class SmtcCraftClient implements ClientModInitializer {
                 LOG.warn("mouse wheel watch never installed ({}): {}",
                         WheelWatch.mode(), WheelWatch.reason());
                 // A log line is not where a player looks: without the wheel the offset
-                // keys look broken rather than absent (R28-5).
+                // keys look broken rather than absent (AUDIT-28-5).
                 if (hud != null) hud.notice(Component.translatable("smtcraft.msg.wheel_off").getString());
             }
         } else if (wheelWatch) {

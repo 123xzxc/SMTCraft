@@ -7,7 +7,7 @@ package org.yinyun.smtcraft.util;
  * check ran in a {@code finally} block around the sequence: it could only fire
  * when the sequence <em>returned</em>, which is precisely the case that does not
  * need a watchdog. The one it was written for — a native call that never comes
- * back — never reaches a {@code finally} at all (R13-1).</p>
+ * back — never reaches a {@code finally} at all (AUDIT-13-1).</p>
  *
  * <p>So the deadline lives on its own daemon thread: it fires whether the watched
  * sequence returns, throws or hangs, and the normal path interrupts it so an

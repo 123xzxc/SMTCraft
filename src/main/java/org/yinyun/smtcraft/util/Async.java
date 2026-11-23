@@ -48,7 +48,7 @@ public final class Async {
     /**
      * Results produced before the client executor exists are parked here instead of
      * being run on the producing thread: touching {@code Minecraft} from an I/O
-     * thread throws somewhere unrelated and randomly (R3-2).
+     * thread throws somewhere unrelated and randomly (AUDIT-32).
      */
     private static final java.util.Queue<Runnable> PARKED = new java.util.concurrent.ConcurrentLinkedQueue<>();
     private static final int MAX_PARKED = 64;
@@ -67,7 +67,7 @@ public final class Async {
     /**
      * Installed by the client so background results can be applied on the client
      * thread. Passing {@code null} detaches it again: results produced from then on
-     * are parked instead of quietly running on whatever thread produced them (R3-2).
+     * are parked instead of quietly running on whatever thread produced them (AUDIT-32).
      */
     public static synchronized void setClientExecutor(Executor executor) {
         client = executor;
@@ -97,7 +97,7 @@ public final class Async {
      * #setClientExecutor} drains whatever was already parked as a side effect. A test
      * that wants to observe parking therefore has to start from an empty queue, or a
      * result an earlier test left behind runs the moment the scope opens and the
-     * failure points at the wrong assertion (R22-2).</p>
+     * failure points at the wrong assertion (AUDIT-22-2).</p>
      */
     public static Scope inlineClientForTests() {
         Executor previous = client;
@@ -120,7 +120,7 @@ public final class Async {
             }
             PARKED.add(task);
             // setClientExecutor() may have drained the queue between the read above
-            // and this add; in that case nobody else will collect the task (R4-4)
+            // and this add; in that case nobody else will collect the task (AUDIT-44)
             Executor arrived = client;
             if (arrived != null) drainParked(arrived);
             return;
@@ -141,7 +141,7 @@ public final class Async {
      *
      * @return whether the task was accepted. Callers that raise a latch before
      *         submitting have to reset it when this returns {@code false}, otherwise a
-     *         full queue silently disables their feature for the rest of the session (R4-1).
+     *         full queue silently disables their feature for the rest of the session (AUDIT-41).
      */
     public static boolean run(String what, Runnable task) {
         if (task == null) return false;
@@ -175,7 +175,7 @@ public final class Async {
     /**
      * Waits until the coalescing lane has nothing queued <em>and</em> is not in the
      * middle of a task. The queue is emptied before the task runs, so checking the
-     * queue alone returned while a write was still in progress (R4-7).
+     * queue alone returned while a write was still in progress (AUDIT-47).
      */
     public static boolean awaitQuiet(long millis) {
         long deadline = System.nanoTime() + millis * 1_000_000L;
@@ -193,9 +193,9 @@ public final class Async {
 
     /**
      * Stops both lanes within {@code budgetMs}. The caller owns the outer shutdown
-     * budget, so a hard-coded 3 s here could outlive it (R8-1). The drain inside it
+     * budget, so a hard-coded 3 s here could outlive it (AUDIT-81). The drain inside it
      * is {@link Budgets#ASYNC_DRAIN_MS} taken off the top rather than half the
-     * budget (R13-2).
+     * budget (AUDIT-13-2).
      */
     public static void shutdown(long budgetMs) {
         // The drain is taken off the top, not split in half: that quiet wait is
@@ -203,7 +203,7 @@ public final class Async {
         // the I/O pool termination is already backed by shutdownNow(). Halving the
         // budget (the shape R10-2 removed from the lyric worker) handed the drain
         // 1.5 s instead of the 3 s it can use, and the snapshot it was waiting for
-        // could be dropped by the very next line (R13-2).
+        // could be dropped by the very next line (AUDIT-13-2).
         long drain = Math.min(Budgets.ASYNC_DRAIN_MS, Math.max(0L, budgetMs));
         long wait = Math.max(0L, budgetMs - drain);
         awaitQuiet(drain);

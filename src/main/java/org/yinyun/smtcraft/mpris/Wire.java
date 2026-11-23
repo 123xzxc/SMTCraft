@@ -118,7 +118,7 @@ public final class Wire {
                     // name, and LinkedHashMap.put dropped the earlier payload in
                     // silence. The ordinal belongs to the dict, not to the entry:
                     // numbering inside entry() restarted at zero for every element
-                    // and collided again (R7-4)
+                    // and collided again (AUDIT-74)
                     String key = e.getKey();
                     String unique = key;
                     for (int n = dict.size(); dict.containsKey(unique); n++) {
@@ -152,7 +152,7 @@ public final class Wire {
         } else {
             // non-string keys are legal D-Bus but never used by MPRIS. The type
             // has to be read before next(), which moves the cursor onto the
-            // value, or the key ends up naming the value's type instead (R6-5)
+            // value, or the key ends up naming the value's type instead (AUDIT-65)
             // the type has to be read before next(), which moves the cursor onto the
             // value; the name is disambiguated when the dict merges the entries
             int keyType = inner.type();

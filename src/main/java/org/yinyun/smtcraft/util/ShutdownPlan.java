@@ -3,7 +3,7 @@ package org.yinyun.smtcraft.util;
 import java.util.List;
 
 /**
- * The shutdown sequence as data rather than as control flow (R16-3).
+ * The shutdown sequence as data rather than as control flow (AUDIT-16-3).
  *
  * <p>{@code finishShutdown} states two properties in its javadoc: the order
  * (drain before writing, the bridge before the writes so it keeps their reserve,
@@ -22,7 +22,7 @@ public final class ShutdownPlan {
     public static final String DRAIN = "drain the background lanes";
     /** The only step that can legitimately block for ten seconds. */
     public static final String BRIDGE = "close the media bridge";
-    /** After the drain, never before it (R15-1). */
+    /** After the drain, never before it (AUDIT-15-1). */
     public static final String WRITE = "write the config";
     public static final String FLUSH = "flush the offset table";
     public static final String LANES = "stop the background lanes";

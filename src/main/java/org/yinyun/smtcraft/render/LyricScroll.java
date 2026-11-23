@@ -6,7 +6,7 @@ package org.yinyun.smtcraft.render;
  * <p>Both readers of a lyric row need the same answer: the renderer knows the sung
  * part down to the glyph, the HUD only knows how much of the line's duration has
  * played. They used to spell the formula out separately, with the anchor borrowed
- * across the class boundary, which meant two metrics for one intent (R25-5).</p>
+ * across the class boundary, which meant two metrics for one intent (AUDIT-25-5).</p>
  *
  * <p>No Minecraft types here on purpose: this is arithmetic, and it has to be
  * testable without a client jar.</p>

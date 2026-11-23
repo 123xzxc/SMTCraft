@@ -10,7 +10,7 @@ import net.minecraft.network.chat.Component;
 import java.util.function.Consumer;
 
 /** Minimal ARGB colour picker: swatches, hex field and three channel sliders. */
-public final class ColorPickerScreen extends Screen {
+public final class ColorPickerScreen extends ScaledScreen {
     private static final String[] SWATCHES = {
             "#FFFFFFFF", "#FFB8BCC4", "#FF7F8A99", "#FF000000",
             "#FFE4405F", "#FFFF7A45", "#FFFFC845", "#FF57C785",
@@ -21,6 +21,8 @@ public final class ColorPickerScreen extends Screen {
     private final String labelKey;
     private final Consumer<String> onPick;
     private final int initial;
+    /** Whether this picker follows the game's GUI scale, like the page that opened it. */
+    private final boolean followScale;
 
     private EditBox hexBox;
     private ChannelSlider rSlider;
@@ -35,8 +37,10 @@ public final class ColorPickerScreen extends Screen {
     private int gridCell = 22;
     private int gridPerRow = 8;
 
-    public ColorPickerScreen(Screen parent, String labelKey, String initialHex, Consumer<String> onPick) {
+    public ColorPickerScreen(Screen parent, String labelKey, String initialHex, Consumer<String> onPick,
+            boolean followScale) {
         super(Component.translatable(labelKey));
+        this.followScale = followScale;
         this.parent = parent;
         this.labelKey = labelKey;
         this.onPick = onPick;
@@ -75,8 +79,9 @@ public final class ColorPickerScreen extends Screen {
     @Override
     protected void init() {
         building = true;
-        int w = Math.min(this.width - 40, 260);
-        int left = (this.width - w) / 2;
+        refreshUi(followScale);
+        int w = Math.min(vw() - 40, 260);
+        int left = (vw() - w) / 2;
         int y = 56;
 
         hexBox = addRenderableWidget(new EditBox(this.font, left, y, w, 20, Component.translatable(labelKey)));
@@ -102,7 +107,7 @@ public final class ColorPickerScreen extends Screen {
         // swatch grid, 8 per row, 22px cells
         gridPerRow = 8;
         gridCell = 22;
-        gridX = (this.width - gridPerRow * gridCell) / 2;
+        gridX = (vw() - gridPerRow * gridCell) / 2;
         gridY = y;
         for (int i = 0; i < SWATCHES.length; i++) {
             final String hex = SWATCHES[i];
@@ -176,21 +181,11 @@ public final class ColorPickerScreen extends Screen {
         if (this.minecraft != null) this.minecraft.setScreenAndShow(parent);
     }
 
-    /** 26.1 up to 26.4-snapshot-4 hand the pointer along with the frame. */
-    public void extractRenderState(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        draw(g, mouseX, mouseY, partialTick);
-    }
-
-    /** 26.4-snapshot-5 and later hand over the extractor, which carries the pointer itself. */
-    public void extractRenderState(GuiGraphicsExtractor g) {
-        draw(g, ScreenHooks.mouseX(g, 0), ScreenHooks.mouseY(g, 0), ScreenHooks.partialTicks(g, 0.0f));
-    }
-
-    private void draw(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
-        ScreenHooks.drawBackground(this, g, mouseX, mouseY, partialTick);
-        g.centeredText(this.font, Component.translatable(labelKey).getString(), this.width / 2, 20, 0xFFFFFFFF);
+    @Override
+    protected void drawFrame(GuiGraphicsExtractor g, int mouseX, int mouseY, float partialTick) {
+        g.centeredText(this.font, Component.translatable(labelKey).getString(), vw() / 2, 20, 0xFFFFFFFF);
         g.centeredText(this.font, Component.translatable("smtcraft.picker.hint").getString(),
-                this.width / 2, 38, 0xFF9FB2C8);
+                vw() / 2, 38, 0xFF9FB2C8);
         for (int i = 0; i < SWATCHES.length; i++) {
             Integer swatch = parse(SWATCHES[i]);
             int colour = swatch == null ? 0xFF808080 : swatch;

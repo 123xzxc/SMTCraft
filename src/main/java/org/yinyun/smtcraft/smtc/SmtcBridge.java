@@ -118,7 +118,7 @@ public final class SmtcBridge implements MediaBridge {
     /**
      * Closes, waiting at most {@code budgetMs} for the sampler.
      *
-     * <p>The shutdown sequence has one budget of its own (R7-6).</p>
+     * <p>The shutdown sequence has one budget of its own (AUDIT-76).</p>
      */
     @Override
     public void close(long budgetMs) {
@@ -128,7 +128,7 @@ public final class SmtcBridge implements MediaBridge {
         if (t != null) {
             t.interrupt();
             try {
-                // join(0) waits forever, so the floor is one millisecond, not zero (R9-2)
+                // join(0) waits forever, so the floor is one millisecond, not zero (AUDIT-92)
                 t.join(Math.max(Budgets.MIN_WAIT_MS,
                         Math.min(budgetMs, MediaBridge.CLOSE_GRACE_MS)));
             } catch (InterruptedException e) {
@@ -161,7 +161,7 @@ public final class SmtcBridge implements MediaBridge {
                     lastError = describe(t);
                     // one failed round is not a track change: keep the card for
                     // swapGraceMs, or a single WinRT hiccup blanks the HUD
-                    // mid-song. MPRIS already behaved this way (R6-7)
+                    // mid-song. MPRIS already behaved this way (AUDIT-67)
                     publishEmpty(cfg, lastError);
                     try {
                         smtc.close();
@@ -230,7 +230,7 @@ public final class SmtcBridge implements MediaBridge {
         if (title == null || title.isEmpty() || browser) {
             // Switching songs looks exactly like "no session" for a fraction of a
             // second; publishEmpty keeps the card it had instead of blanking the
-            // whole HUD, and the failure branch shares the same rule (R6-7)
+            // whole HUD, and the failure branch shares the same rule (AUDIT-67)
             publishEmpty(cfg, "");
             return;
         }
@@ -285,7 +285,7 @@ public final class SmtcBridge implements MediaBridge {
      *
      * <p>Both "no session" and "the round threw" come through here, so a track
      * change and a failed sample look the same to the HUD: the card stays put
-     * instead of flashing white (R6-7). The cover belongs to the track, so it
+     * instead of flashing white (AUDIT-67). The cover belongs to the track, so it
      * goes with it.</p>
      */
     private void publishEmpty(SmtcConfig cfg, String note) {
@@ -322,7 +322,7 @@ public final class SmtcBridge implements MediaBridge {
         return Math.max(min, Math.min(max, value));
     }
 
-    /** Kept as a delegate so the existing call sites read the same (R15-3). */
+    /** Kept as a delegate so the existing call sites read the same (AUDIT-15-3). */
     public static String describe(Throwable t) {
         return Errors.describe(t);
     }

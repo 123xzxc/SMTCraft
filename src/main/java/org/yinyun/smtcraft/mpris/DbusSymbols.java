@@ -16,11 +16,11 @@ import java.util.List;
  * <p>They are kept apart on purpose. {@code handle.type()} is whatever the
  * descriptor asked for, so comparing a handle against its own descriptor proves
  * only that one line agrees with itself — a {@code dbus_bool_t} declared as
- * {@code void} passes that check and then throws on the first real call (R22-3).
+ * {@code void} passes that check and then throws on the first real call (AUDIT-22-3).
  * The table below is checked when this class is initialised, which happens on any
  * platform: the older arrangement put the check after a successful
  * {@code libraryLookup}, so on a machine without libdbus it never ran at all
- * (R23-3).</p>
+ * (AUDIT-23-3).</p>
  */
 public final class DbusSymbols {
 
@@ -114,7 +114,7 @@ public final class DbusSymbols {
      *
      * <p>Runs unconditionally at class initialisation, so a wrong
      * {@code ofVoid}/{@code of} pair fails on any platform instead of waiting for a
-     * Linux load (R23-3). It cannot prove the header itself is right — that is what
+     * Linux load (AUDIT-23-3). It cannot prove the header itself is right — that is what
      * {@code src/test/resources/libdbus-prototypes.txt} is for.</p>
      */
     public static void checkShapes() {

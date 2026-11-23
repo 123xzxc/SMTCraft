@@ -19,6 +19,8 @@ import org.yinyun.smtcraft.mpris.Wire;
 
 import org.yinyun.smtcraft.util.Async;
 import org.yinyun.smtcraft.util.Budgets;
+import org.yinyun.smtcraft.util.UiScale;
+import org.yinyun.smtcraft.util.UpdateCheck;
 import org.yinyun.smtcraft.util.Watchdog;
 
 import javax.crypto.Cipher;
@@ -57,6 +59,8 @@ public final class SelfTest {
         qrcLinesSurviveWithoutWords();
         qrcDecoderRoundTrip();
         songMatchAcceptsAndRejects();
+        songMatchSeparatesEditions();
+        editionGateHandlesLazyCatalogues();
         backgroundLanesUseTheirOwnThreads();
         configChangeWakesSamplerOnlyWhenRead();
         mprisMetadataParsing();
@@ -79,6 +83,9 @@ public final class SelfTest {
         smootherLearnsASlowPublisher();
         smootherRejectsAMismatchedStep();
         followOffsetPinsTheSungEdge();
+        uiScaleFollowsTheGuiScale();
+        releaseCheckReadsTagsAndOrdersThem();
+        updateCheckFallsBackPastTheApi();
 
         System.out.println();
         System.out.println(checks + " checks, " + failures + " failed");
@@ -190,6 +197,89 @@ public final class SelfTest {
         check("different song rejected", reject < SongMatch.ACCEPT);
     }
 
+
+    /**
+     * "Euphoria (feat. Tsugumi Nagahara) [US40 Remix]" once took Kugou's plain
+     * "Euphoria": {@link SongMatch#bare} cut the brackets and {@link SongMatch#clean}
+     * deleted every edition word, so the two titles compared as the same string and
+     * the sheet of another cut was used. Same title, different recording - the
+     * timing is wrong everywhere and the words may not even match.
+     */
+    private static void songMatchSeparatesEditions() {
+        TrackInfo remix = new TrackInfo(true, true, "Euphoria (feat. Tsugumi Nagahara) [US40 Remix]",
+                "Cloudy.exe", "", "test", "playing", 0L, 0L, 0L, 1.0f, 0L);
+        check("the plain cut is not the remix",
+                SongMatch.score("Euphoria", "Cloudy.exe", 200000L, remix) < SongMatch.ACCEPT);
+        check("the same remix is accepted",
+                SongMatch.score("Euphoria (US40 Remix)", "Cloudy.exe", 200000L, remix)
+                        >= SongMatch.ACCEPT);
+        check("another remix is not the same remix",
+                SongMatch.score("Euphoria (Cloudy.exe Remix)", "Cloudy.exe", 200000L, remix)
+                        < SongMatch.ACCEPT);
+
+        TrackInfo plain = new TrackInfo(true, true, "Euphoria", "Cloudy.exe", "", "test", "playing",
+                0L, 0L, 0L, 1.0f, 0L);
+        check("the plain cut is accepted for itself",
+                SongMatch.score("Euphoria", "Cloudy.exe", 200000L, plain) >= SongMatch.ACCEPT);
+        check("the remix is not the plain cut",
+                SongMatch.score("Euphoria (US40 Remix)", "Cloudy.exe", 200000L, plain)
+                        < SongMatch.ACCEPT);
+        check("a live take is another recording",
+                SongMatch.score("Euphoria - Live", "Cloudy.exe", 200000L, plain) < SongMatch.ACCEPT);
+        check("an instrumental is another recording",
+                SongMatch.score("Euphoria 伴奏", "Cloudy.exe", 200000L, plain) < SongMatch.ACCEPT);
+        check("one edition mark on the playing track",
+                SongMatch.editionMap(remix.title()).keySet().equals(java.util.Set.of("remix")));
+        check("a guest singer moves the score, not the verdict",
+                SongMatch.score("Euphoria (feat. Someone Else) [US40 Remix]", "Cloudy.exe",
+                        200000L, remix)
+                        < SongMatch.score("Euphoria (feat. Tsugumi Nagahara) [US40 Remix]",
+                        "Cloudy.exe", 200000L, remix));
+    }
+
+
+    /**
+     * The edition gate only earns its keep on a lazy catalogue: "Euphoria (Remix)" names
+     * the kind but not the cut, and that spelling is the common one. It used to be a
+     * wildcard (88 points, ACCEPT is 62); now it is another recording. Also pins the
+     * query order (the untouched title has to be asked first) and the dotted I that used
+     * to eat a mark through a lowercased index (R33-1, R33-2, R33-4).
+     */
+    private static void editionGateHandlesLazyCatalogues() {
+        TrackInfo remix = new TrackInfo(true, true, "Euphoria (feat. Tsugumi Nagahara) [US40 Remix]",
+                "Cloudy.exe", "", "test", "playing", 0L, 0L, 0L, 1.0f, 0L);
+        check("a nameless remix is not the named remix",
+                SongMatch.score("Euphoria (Remix)", "Cloudy.exe", 200000L, remix)
+                        < SongMatch.ACCEPT);
+
+        TrackInfo nameless = new TrackInfo(true, true, "Euphoria (Remix)", "Cloudy.exe", "", "test",
+                "playing", 0L, 0L, 0L, 1.0f, 0L);
+        check("two nameless remixes cannot be told apart",
+                SongMatch.score("Euphoria (Remix)", "Cloudy.exe", 200000L, nameless)
+                        >= SongMatch.ACCEPT);
+
+        // the other direction: the playing title is the one without a name, and the
+        // catalogue offers a named cut. Without the mismatch line this scores 88.
+        check("a nameless playing title does not claim a named cut",
+                SongMatch.score("Euphoria (US40 Remix)", "Cloudy.exe", 200000L, nameless)
+                        < SongMatch.ACCEPT);
+
+        check("a dotted I keeps its edition mark",
+                SongMatch.sameEdition("\u0130stanbul - Live", "Istanbul (Live)"));
+        check("a dotted I keeps the kind it carries",
+                SongMatch.editionMap("\u0130stanbul - Live").containsKey("live"));
+
+        List<String> asked = SongMatch.queries(new TrackInfo(true, true,
+                "Euphoria (feat. Tsugumi Nagahara) [US40 Remix]", "Cloudy.exe", "Some Album",
+                "test", "playing", 0L, 0L, 0L, 1.0f, 0L));
+        check("the untouched title is asked first",
+                !asked.isEmpty()
+                        && asked.get(0).equals("Euphoria (feat. Tsugumi Nagahara) [US40 Remix]"));
+        // full title, title + artist, title + album, title alone - the dash form is
+        // skipped because this title has no " - " in it
+        check("the edition-less forms still follow", asked.size() >= 4);
+    }
+
     /** DESede/ECB/NoPadding needs a multiple of eight bytes; QQ pads with zeros too. */
     private static byte[] pad(byte[] data) {
         int missing = (8 - data.length % 8) % 8;
@@ -248,7 +338,7 @@ public final class SelfTest {
 
         // A result produced before the client installs its executor must wait for
         // it: running it inline on the worker used to touch Minecraft state from a
-        // background thread (R3-2).
+        // background thread (AUDIT-32).
         Async.setClientExecutor(null);
         AtomicInteger applied = new AtomicInteger();
         Async.onClient(applied::incrementAndGet);
@@ -257,14 +347,14 @@ public final class SelfTest {
             check("parked result is handed over once the executor exists", applied.get() == 1);
         }
         // Closing the scope has to put the previous rule back (null here), otherwise
-        // every later test would silently run its client work inline (R21-2).
+        // every later test would silently run its client work inline (AUDIT-21-2).
         Async.onClient(applied::incrementAndGet);
         check("the inline scope restores the parking rule", applied.get() == 1);
 
         check("empty submit is refused", !Async.run("selftest", null));
 
         // awaitQuiet used to look at the queue only, which the coalescing lane empties
-        // before it runs the task, so it returned while a write was still going (R4-7)
+        // before it runs the task, so it returned while a write was still going (AUDIT-47)
         AtomicBoolean written = new AtomicBoolean();
         Async.latest("selftest", () -> {
             try {
@@ -358,7 +448,7 @@ public final class SelfTest {
      * dict entries whose values are variants, and {@code Metadata} inside is
      * another such array. The old decoder had no dict-entry branch, so the map
      * arrived as a list of nulls and every Linux player looked like it published
-     * no title at all (R5-1).
+     * no title at all (AUDIT-51).
      */
     private static void wireDecodesMetadata() {
         Seg metadata = array(List.of(
@@ -401,7 +491,7 @@ public final class SelfTest {
                 "odd".equals(decoded.get("#" + Wire.T_INT32)));
 
         // two keys of the same non-string type used to collapse into one entry and
-        // drop the earlier value without a word (R7-4)
+        // drop the earlier value without a word (AUDIT-74)
         Seg first = new Seg(Wire.T_DICT_ENTRY, "", 0L, 0.0d, false, List.of(
                 new Seg(Wire.T_INT32, "", 1L, 0.0d, false, List.of()),
                 variant(str("one"))));
@@ -435,7 +525,7 @@ public final class SelfTest {
         List<DbusSymbols.Sym> table;
         try {
             // Initialising the table is itself a check; a wrong pair throws here and
-            // would otherwise abort the whole run with a stack trace (R23-3).
+            // would otherwise abort the whole run with a stack trace (AUDIT-23-3).
             table = DbusSymbols.all();
         } catch (Throwable broken) {
             // The failure arrives as ExceptionInInitializerError, whose own message is
@@ -877,7 +967,7 @@ public final class SelfTest {
             java.lang.reflect.Field genField = SmtcConfig.class.getDeclaredField("saveGeneration");
             genField.setAccessible(true);
             Object counter = genField.get(cfg);
-            check("the generation counter is an AtomicInteger, not a bare int (R18-2)",
+            check("the generation counter is an AtomicInteger, not a bare int (AUDIT-18-2)",
                     counter instanceof java.util.concurrent.atomic.AtomicInteger);
             int before = ((java.util.concurrent.atomic.AtomicInteger) counter).get();
             cfg.saveNow();
@@ -968,7 +1058,7 @@ public final class SelfTest {
                 pollField.set(broken, 0L);
                 broken.panelWidth = 297;
                 broken.pollReloadAsync();
-                // awaitQuiet only covers the coalescing lane (R4-4); the poll itself runs
+                // awaitQuiet only covers the coalescing lane (AUDIT-44); the poll itself runs
                 // on the I/O pool, so wait for its own latch instead of guessing a sleep.
                 long pollDeadline = System.currentTimeMillis() + 2_000L;
                 while ((Boolean) busyField.get(broken) && System.currentTimeMillis() < pollDeadline) {
@@ -1025,7 +1115,7 @@ public final class SelfTest {
         check("the first sample is drawn as it is", first == 10_000L);
         // every step below has one arithmetically exact answer: since = now - changedAt,
         // out = rawPos + since * rate, then clamped. Direction-only assertions let a
-        // halved rate stay green (R25-4), so each value is spelled out.
+        // halved rate stay green (AUDIT-25-4), so each value is spelled out.
         long grown = smoother.presented(10_400L, true, 1.0f, "k", t + 500L);
         check("a step forward is followed", grown == 10_400L);
         // between steps the clock runs ahead of the last raw value: that gap is
@@ -1047,7 +1137,7 @@ public final class SelfTest {
     /**
      * A freeze looks like a very slow publisher: the sample after a four second stall
      * closes a four second gap, and learning that raised the extrapolation cap from
-     * 1.5 s to 4.4 s - the cap exists to survive a stall, not to grow on one (R25-3).
+     * 1.5 s to 4.4 s - the cap exists to survive a stall, not to grow on one (AUDIT-25-3).
      */
     private static void smootherIgnoresAStallWhenLearning() {
         ProgressSmoother smoother = new ProgressSmoother();
@@ -1068,7 +1158,7 @@ public final class SelfTest {
     /**
      * A player that publishes every four seconds is not seeking: the jump matches the
      * wall clock. It used to fail the "gap <= 2.5 s" learning rule, so the cap stayed
-     * at 1.5 s and the picture fell 2.4 s behind just before each update (R26-3).
+     * at 1.5 s and the picture fell 2.4 s behind just before each update (AUDIT-26-3).
      */
     private static void smootherLearnsASlowPublisher() {
         ProgressSmoother smoother = new ProgressSmoother();
@@ -1092,7 +1182,7 @@ public final class SelfTest {
      * The learning rule has two halves. The gap alone says "something happened every
      * two seconds"; the distance says whether that something was the audio. A frozen
      * app or a position quantised to whole half seconds can pass the first half only,
-     * and the period it would teach is wrong (R26-4).
+     * and the period it would teach is wrong (AUDIT-26-4).
      */
     private static void smootherRejectsAMismatchedStep() {
         ProgressSmoother smoother = new ProgressSmoother();
@@ -1129,11 +1219,34 @@ public final class SelfTest {
      * The corner radius and the spin speed each have one range: the constants, which
      * {@code normalise()} clamps to and the settings sliders are built from. Nothing asserted
      * the clamps at all, so a range that drifted from its slider would only show up as a
-     * value the panel cannot reproduce (R27-2).
+     * value the panel cannot reproduce (AUDIT-27-2).
      */
     private static void configClampsMatchTheSliders() {
         check("the corner range is ordered", SmtcConfig.MIN_CORNER_RADIUS < SmtcConfig.MAX_CORNER_RADIUS);
         check("the spin range is ordered", SmtcConfig.MIN_VINYL_SPIN < SmtcConfig.MAX_VINYL_SPIN);
+        SmtcConfig edges = new SmtcConfig();
+        edges.borderOpacity = 4.0f;
+        edges.normalise();
+        check("a border opacity above the range stops at 1", edges.borderOpacity == 1.0f);
+        edges.borderOpacity = -2.0f;
+        edges.normalise();
+        check("a border opacity below the range stops at 0", edges.borderOpacity == 0.0f);
+        // the two new colour fields are read straight by the renderer: a blank default
+        // would paint the translation with whatever Draw.color() falls back to
+        SmtcConfig palette = new SmtcConfig();
+        check("the translation has a colour of its own",
+                palette.translationColor != null && palette.translationColor.matches("#[0-9A-Fa-f]{6}"));
+        check("the candidate line has a colour of its own",
+                palette.candidateColor != null && palette.candidateColor.matches("#[0-9A-Fa-f]{6}"));
+        check("the header is drawn by default", !palette.lyricsOnly);
+        check("the flat cover is rounded by default", palette.artRound);
+        palette.artRadius = SmtcConfig.MAX_ART_RADIUS + 40;
+        palette.normalise();
+        check("a cover radius above the range stops at the top",
+                palette.artRadius == SmtcConfig.MAX_ART_RADIUS);
+        palette.artRadius = -3;
+        palette.normalise();
+        check("a cover radius below the range stops at 0", palette.artRadius == 0);
         SmtcConfig high = new SmtcConfig();
         high.cornerRadius = SmtcConfig.MAX_CORNER_RADIUS + 40;
         high.vinylSpinSpeed = SmtcConfig.MAX_VINYL_SPIN + 300.0f;
@@ -1148,6 +1261,158 @@ public final class SelfTest {
         check("a corner below the range stops at the bottom",
                 low.cornerRadius == SmtcConfig.MIN_CORNER_RADIUS);
         check("a spin below the range stops at the bottom", low.vinylSpinSpeed == SmtcConfig.MIN_VINYL_SPIN);
+    }
+
+    /**
+     * The pages are laid out for GUI scale 2 and scaled from there.
+     *
+     * <p>What matters is the viewport, not the multiplier: at every scale the design width
+     * has to come out the same, because that is what decides whether fourteen rows still
+     * fit. The multiplier on its own can be right while the page is still laid out in
+     * screen pixels, which is exactly the bug this is here to catch.</p>
+     */
+    private static void uiScaleFollowsTheGuiScale() {
+        check("scale 2 is the design size", UiScale.factor(2) == 1.0f);
+        check("scale 4 halves the multiplier", UiScale.factor(4) == 0.5f);
+        check("scale 1 doubles the page", UiScale.factor(1) == UiScale.MAX);
+        check("an unknown scale leaves the page alone", UiScale.factor(0) == 1.0f);
+        int designWidth = 1920 / UiScale.BASE;
+        boolean sameViewport = true;
+        for (int scale = 1; scale <= 4; scale++) {
+            int screenWidth = 1920 / scale;
+            if (UiScale.design(screenWidth, UiScale.factor(scale)) != designWidth) sameViewport = false;
+        }
+        check("a 1920 px window designs to the same width at every scale", sameViewport);
+        // the height decides the row pitch: at scale 4 a 1080 px window is 270 logical px,
+        // which is what squeezed fourteen rows into a 10 px pitch
+        check("a 1080 px window at scale 4 designs to the scale-2 height",
+                UiScale.design(1080 / 4, UiScale.factor(4)) == 1080 / UiScale.BASE);
+        check("a nonsense factor is ignored", UiScale.design(320, 0.0f) == 320);
+        check("the floor keeps the text readable", UiScale.factor(9) == UiScale.MIN);
+        // one notch is 14 px on the glass whatever the scale: the design step has to move the
+        // other way, so the amount the reader sees does not depend on the interface size
+        check("a notch travels 14 screen px at the design scale", UiScale.scrollStep(-1.0d, 1.0f) == -14);
+        check("a doubled page scrolls half as far in design pixels", UiScale.scrollStep(-1.0d, 2.0f) == -7);
+        check("a halved page scrolls twice as far in design pixels", UiScale.scrollStep(-1.0d, 0.5f) == -28);
+        check("a fractional notch still moves", UiScale.scrollStep(0.05d, 2.0f) == 1);
+        check("no notch does not move", UiScale.scrollStep(0.0d, 1.0f) == 0);
+    }
+
+    /**
+     * The release check is mostly string work, and each part of it decides whether a player
+     * is told about a version they already have: the tag loses its "v", the JSON scrape takes
+     * the first value, and the comparison follows Fabric's own reading of a four-part version
+     * - the date suffix sorts *above* the plain version, so a same-day rebuild is not "older".
+     */
+    private static void releaseCheckReadsTagsAndOrdersThem() {
+        check("a v prefix is stripped from a tag", "1.0.3".equals(UpdateCheck.cleanTag(" v1.0.3 ")));
+        check("a plain tag is left alone", "1.0.2.20261123".equals(UpdateCheck.cleanTag("1.0.2.20261123")));
+        String body = "{\"tag_name\":\"v1.0.3\",\"name\":\"1.0.3\","
+                + "\"html_url\":\"https://example.invalid/releases/v1.0.3\"}";
+        check("the tag is read out of a release body", "v1.0.3".equals(UpdateCheck.tagOf(body)));
+        check("the release page is read out of the same body",
+                "https://example.invalid/releases/v1.0.3".equals(UpdateCheck.releasePageOf(body)));
+        check("a body without a tag answers empty", UpdateCheck.tagOf("{\"message\":\"Not Found\"}").isEmpty());
+        check("a newer release is news", UpdateCheck.newer("1.0.2", "1.0.3"));
+        check("the date suffix sorts above the plain version",
+                UpdateCheck.newer("1.0.2", "1.0.2.20261123"));
+        check("the same version is not news", !UpdateCheck.newer("1.0.3", "v1.0.3"));
+        check("an older release is not news", !UpdateCheck.newer("1.0.3", "1.0.2.20261123"));
+        check("an unreadable current version is not news", !UpdateCheck.newer("", "1.0.3"));
+        check("four parts compare", UpdateCheck.compare("1.0.3.20261123", "1.0.3") > 0);
+        check("ten is bigger than nine", UpdateCheck.compare("1.0.10", "1.0.9") > 0);
+        check("nothing is known before the first answer", !UpdateCheck.state().known());
+        check("nothing is available before the first answer", !UpdateCheck.state().available());
+    }
+
+    /**
+     * The REST endpoint is rationed per address - sixty calls an hour for everyone behind
+     * the same address - so the check has two more ways to learn the newest tag: the site
+     * feed, whose first entry ends with the tag, and the redirect of the "latest" page.
+     * Both scrape the same three facts, and both answer empty rather than guessing.
+     */
+    private static void updateCheckFallsBackPastTheApi() {
+        String feed = "<feed><entry>"
+                + "<id>tag:github.com,2008:Repository/1466447196/v1.0.2</id>"
+                + "<link rel=\"alternate\" type=\"text/html\""
+                + " href=\"https://github.com/123xzxc/SMTCraft/releases/tag/v1.0.2\"/>"
+                + "</entry><entry>"
+                + "<id>tag:github.com,2008:Repository/1466447196/v1.0.1</id>"
+                + "</entry></feed>";
+        check("the feed names its first tag", "v1.0.2".equals(UpdateCheck.atomTag(feed)));
+        check("the feed links its first release",
+                "https://github.com/123xzxc/SMTCraft/releases/tag/v1.0.2".equals(UpdateCheck.atomLink(feed)));
+        check("a feed without entries answers empty", UpdateCheck.atomTag("<feed></feed>").isEmpty());
+        check("a feed without a link answers empty", UpdateCheck.atomLink("<feed><entry>x</entry></feed>").isEmpty());
+        check("the redirect names the tag", "v1.0.3".equals(UpdateCheck.tagInLocation(
+                "https://github.com/123xzxc/SMTCraft/releases/tag/v1.0.3")));
+        check("a query after the tag is dropped", "v1.0.3".equals(UpdateCheck.tagInLocation(
+                "https://github.com/123xzxc/SMTCraft/releases/tag/v1.0.3?expanded=true")));
+        check("a page that is not a release answers empty",
+                UpdateCheck.tagInLocation("https://github.com/login").isEmpty());
+        check("an empty redirect answers empty", UpdateCheck.tagInLocation("").isEmpty());
+
+        UpdateCheck.State newer = new UpdateCheck.State("1.0.0", "1.0.1", "u", "", 7L);
+        UpdateCheck.State same = new UpdateCheck.State("1.0.2.20261123", "1.0.1", "u", "", 7L);
+        UpdateCheck.State unknown = new UpdateCheck.State("1.0.2.20261123", "", "", "", 0L);
+        UpdateCheck.State refused = new UpdateCheck.State("1.0.2.20261123", "", "",
+                "api: http 403 (rations used up)", 7L);
+        check("a newer tag asks for the release badge",
+                UpdateCheck.BADGE_AVAILABLE.equals(UpdateCheck.badgeKey(newer, false)));
+        check("a failed look repeats the reason, it does not claim to be current",
+                UpdateCheck.BADGE_FAILED.equals(UpdateCheck.badgeKey(refused, false)));
+        check("a look in flight says it is still looking",
+                UpdateCheck.BADGE_CHECKING.equals(UpdateCheck.badgeKey(unknown, false))
+                        && UpdateCheck.BADGE_CHECKING.equals(UpdateCheck.badgeKey(same, true)));
+        check("a finished look with nothing newer says it is current",
+                UpdateCheck.BADGE_CURRENT.equals(UpdateCheck.badgeKey(same, false)));
+        long began = System.currentTimeMillis();
+        check("a wait with no time left answers the empty state at once",
+                UpdateCheck.awaitAnswer(0L).known() == false
+                        && System.currentTimeMillis() - began < 400L);
+        check("a negative wait does not hang", UpdateCheck.awaitAnswer(-5L).known() == false);
+        check("a pre-release is older than its release",
+                UpdateCheck.compare("1.0.2-beta", "1.0.2") < 0
+                        && !UpdateCheck.newer("1.0.2", "1.0.2-beta"));
+        check("build metadata does not order two releases",
+                UpdateCheck.compare("1.0.2+build5", "1.0.2") == 0
+                        && !UpdateCheck.newer("1.0.2", "1.0.2+build5"));
+        check("a release outranks the beta before it",
+                UpdateCheck.newer("1.0.2-beta", "1.0.3"));
+        check("a dated release outranks a beta of a later base",
+                UpdateCheck.newer("1.0.2.20261123", "1.0.3-beta"));
+        check("a version that cannot be read says so instead of claiming to be current",
+                UpdateCheck.BADGE_UNKNOWN.equals(UpdateCheck.badgeKey(
+                        new UpdateCheck.State("", "1.0.9", "u", "", 7L), false)));
+        check("a failed look names its reason by key, not by diagnostic",
+                UpdateCheck.REASON_RATE.equals(UpdateCheck.reasonKey(refused))
+                        && UpdateCheck.BADGE_FAILED.equals(UpdateCheck.badgeKey(refused, false)));
+        check("a switch that was never turned on is not a look in flight",
+                UpdateCheck.BADGE_OFF.equals(UpdateCheck.badgeKey(unknown, false, false))
+                        && UpdateCheck.BADGE_OFF.equals(UpdateCheck.badgeKey(newer, false, false))
+                        && UpdateCheck.BADGE_AVAILABLE.equals(UpdateCheck.badgeKey(newer, false, true)));
+        check("the reason is data on the answer, not a word in its diagnostic",
+                UpdateCheck.REASON_TLS.equals(UpdateCheck.reasonKey(
+                        new UpdateCheck.State("1.0.2.20261123", "", "", "look failed",
+                                7L, UpdateCheck.Reason.TLS))));
+        check("a certificate that refused the connection is its own reason",
+                UpdateCheck.Reason.TLS == UpdateCheck.classify(
+                        "javax.net.ssl.SSLHandshakeException: PKIX path building failed"));
+        check("a silent network is not a rationed one",
+                UpdateCheck.Reason.OFFLINE == UpdateCheck.classify(
+                        "java.net.UnknownHostException: github.com")
+                        && UpdateCheck.Reason.OFFLINE == UpdateCheck.classify("connect timed out"));
+        check("a page without a tag is not a network failure",
+                UpdateCheck.Reason.OTHER == UpdateCheck.classify("no entry in the feed"));
+        // the scheme is a property of the code, so it is asserted here; the shell guard only
+        // refuses a scheme assembled out of a small literal (AUDIT-47-5)
+        check("every endpoint of the check is https",
+                UpdateCheck.API.startsWith("https://") && UpdateCheck.HOME.startsWith("https://")
+                        && UpdateCheck.ISSUES.startsWith("https://")
+                        && UpdateCheck.RELEASES.startsWith("https://")
+                        && UpdateCheck.ATOM.startsWith("https://")
+                        && UpdateCheck.LATEST.startsWith("https://")
+                        && UpdateCheck.API.endsWith("/releases/latest"));
     }
 
     private static void check(String what, boolean ok) {

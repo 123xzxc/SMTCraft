@@ -4,7 +4,7 @@
 # This file is the third opinion, not the source code: DbusSymbols declares each
 # entry twice (descriptor and Java types) and compares those two, which cannot
 # catch a mistake both halves share. SelfTest parses these lines and compares
-# them with the table (R23-3). One declaration per line, comments start with #.
+# them with the table (AUDIT-23-3). One declaration per line, comments start with #.
 
 DBusConnection *dbus_bus_get_private(DBusBusType type, DBusError *error)
 void dbus_connection_set_exit_on_disconnect(DBusConnection *connection, dbus_bool_t exit_on_disconnect)

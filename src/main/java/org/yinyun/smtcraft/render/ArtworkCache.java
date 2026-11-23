@@ -54,7 +54,7 @@ public final class ArtworkCache {
     static {
         // ImageIO otherwise writes a disk cache file per decode, which fails when
         // %TEMP% is not writable (Defender). This is a process-wide switch, so it
-        // is set once here instead of inside the decode path (R3-4).
+        // is set once here instead of inside the decode path (AUDIT-34).
         ImageIO.setUseCache(false);
     }
 
@@ -77,20 +77,20 @@ public final class ArtworkCache {
      * A decoded cover handed over by the worker. Only the render thread ever
      * closes one of these: the worker publishes an image once and then forgets
      * it, so "close" has exactly one owner and no image can be freed twice or
-     * uploaded after being freed (R3-1).
+     * uploaded after being freed (AUDIT-31).
      */
     private record Done(String key, NativeImage image, int generation) { }
 
     /**
      * Bumped by {@link #clear()}. A decode that started before the click is from an
      * older generation and gets thrown away, otherwise the cover the player just
-     * cleared reappears on the next frame (R4-5).
+     * cleared reappears on the next frame (AUDIT-45).
      */
     private volatile int generation;
 
     /** Worker output waiting to be collected; appended by the worker, drained by the render thread. */
     private final ConcurrentLinkedQueue<Done> handoff = new ConcurrentLinkedQueue<>();
-    /** Decoded images waiting for an upload. Render thread only, hence the plain map (R3-1). */
+    /** Decoded images waiting for an upload. Render thread only, hence the plain map (AUDIT-31). */
     private final LinkedHashMap<String, NativeImage> decoded = new LinkedHashMap<>(8, 0.75f, false);
     /** Textures to release one call later, so the frame that still holds them finishes (N9). */
     private final List<Identifier> pendingRelease = new ArrayList<>();
@@ -114,16 +114,33 @@ public final class ArtworkCache {
     }
 
     /**
+     * A square cover with rounded corners. The radius is baked into the pixels, so a
+     * change of the slider is a different cache key rather than a redraw every frame.
+     *
+     * @param radiusDesign corner radius in HUD pixels, 0 for a plain square
+     * @param drawnSize    the size the cover is drawn at, needed to scale the radius
+     *                     from HUD pixels to texels
+     */
+    public Identifier textureRounded(String hash, byte[] png, int radiusDesign, int drawnSize) {
+        return texture(hash, png, false, radiusDesign, drawnSize);
+    }
+
+    /**
      * @param circular crop the image to a disc (vinyl mode, spinning cover)
      */
     public Identifier texture(String hash, byte[] png, boolean circular) {
+        return texture(hash, png, circular, 0, 0);
+    }
+
+    public Identifier texture(String hash, byte[] png, boolean circular, int radiusDesign,
+                              int drawnSize) {
         if (hash == null || hash.isEmpty() || png == null || png.length == 0) {
             return null;
         }
-        String key = circular ? hash + "@disc" : hash;
+        String key = circular ? hash + "@disc" : radiusDesign > 0 && drawnSize > 0 ? hash + "@r" + radiusDesign : hash;
         // Evicted textures are released every frame, not only when a lookup misses:
         // a song that keeps hitting the cache used to hold them until the next song
-        // change (R4-6).
+        // change (AUDIT-46).
         drainPending();
         Identifier cached = byHash.get(key);
         if (cached != null) {
@@ -135,13 +152,13 @@ public final class ArtworkCache {
         NativeImage ready = decoded.remove(key);
         if (ready != null) {
             try {
-                Identifier id = upload(key, hash, ready, circular);
+                Identifier id = upload(key, hash, ready, circular, radiusDesign);
                 byHash.put(key, id);
                 evict();
                 return id;
             } catch (Throwable t) {
                 // the image left the map above and never reached a texture, so this
-                // is the only owner left; without the close it leaks native memory (R4-2)
+                // is the only owner left; without the close it leaks native memory (AUDIT-42)
                 ready.close();
                 fail(key, t);
                 return null;
@@ -158,7 +175,12 @@ public final class ArtworkCache {
                 DECODER.execute(() -> {
                     try {
                         NativeImage image = decode(copy);
-                        if (circular) disc(image);
+                        if (circular) {
+                            disc(image);
+                        } else if (radiusDesign > 0 && drawnSize > 0) {
+                            int side = Math.min(image.getWidth(), image.getHeight());
+                            roundCorners(image, Math.round(radiusDesign * (float) side / drawnSize));
+                        }
                         if (handoff.size() >= MAX_PENDING) {
                             // nobody is consuming covers right now (no frame drew the
                             // HUD); this image was never published, so the worker is
@@ -189,9 +211,11 @@ public final class ArtworkCache {
     }
 
     /** Render thread only: hand the finished image to the texture manager. */
-    private static Identifier upload(String key, String hash, NativeImage image, boolean circular) {
+    private static Identifier upload(String key, String hash, NativeImage image, boolean circular,
+                                     int radiusDesign) {
         Identifier id = Identifier.fromNamespaceAndPath(SmtcCraftClient.MOD_ID,
-                "covers/" + sanitize(hash) + (circular ? "_vinyl" : ""));
+                "covers/" + sanitize(hash)
+                        + (circular ? "_vinyl" : radiusDesign > 0 ? "_r" + radiusDesign : ""));
         if (!CoverTexture.register(id, image, "smtcraft cover " + hash)) {
             // the image never reached the GPU, so the caller still owns it and closes it
             throw new IllegalStateException("cannot publish the cover texture: " + CoverTexture.lastFailure());
@@ -286,6 +310,38 @@ public final class ArtworkCache {
         return small;
     }
 
+    /**
+     * Clear the four corners of a square cover. Radius is in texels and clamped to half the
+     * short side; the outermost ring fades out over one texel so the edge does not stair-step
+     * when 44 HUD pixels are stretched over a 256 px thumbnail.
+     */
+    private static void roundCorners(NativeImage image, int radius) {
+        int w = image.getWidth();
+        int h = image.getHeight();
+        int r = Math.max(0, Math.min(Math.min(w, h) / 2, radius));
+        if (r == 0) return;
+        float inner = r - 1.0f;
+        for (int y = 0; y < h; y++) {
+            boolean top = y < r;
+            boolean bottom = y >= h - r;
+            if (!top && !bottom) continue;
+            float cy = top ? r - 0.5f : h - r + 0.5f;
+            for (int x = 0; x < w; x++) {
+                boolean left = x < r;
+                boolean right = x >= w - r;
+                if (!left && !right) continue;
+                float cx = left ? r - 0.5f : w - r + 0.5f;
+                float dx = x + 0.5f - cx;
+                float dy = y + 0.5f - cy;
+                float d = (float) Math.sqrt(dx * dx + dy * dy);
+                if (d <= inner) continue;
+                float alpha = d >= r ? 0.0f : (r - d);
+                int packed = image.getPixel(x, y);
+                image.setPixelABGR(x, y, (Math.round(255.0f * alpha) << 24) | (packed & 0xFFFFFF));
+            }
+        }
+    }
+
     /** Clip the image to a circle with a one-pixel antialiased rim. */
     private static void disc(NativeImage image) {
         int w = image.getWidth();
@@ -335,7 +391,7 @@ public final class ArtworkCache {
         Done item;
         while ((item = handoff.poll()) != null) {
             if (item.generation() != generation) {
-                // decoded for a cache that has since been cleared (R4-5)
+                // decoded for a cache that has since been cleared (AUDIT-45)
                 item.image().close();
                 dropped = true;
                 continue;
@@ -343,7 +399,7 @@ public final class ArtworkCache {
             NativeImage previous = decoded.put(item.key(), item.image());
             if (previous != null) {
                 // two decodes for the same key raced; keep the newer one and close
-                // the loser, which nothing else references any more (R4-3)
+                // the loser, which nothing else references any more (AUDIT-43)
                 previous.close();
                 dropped = true;
             }
@@ -367,7 +423,7 @@ public final class ArtworkCache {
     }
 
     public void clear() {
-        // invalidate decodes that are running right now (R4-5)
+        // invalidate decodes that are running right now (AUDIT-45)
         generation++;
         for (Identifier id : byHash.values()) {
             Minecraft.getInstance().getTextureManager().release(id);

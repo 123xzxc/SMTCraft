@@ -1,345 +1,985 @@
-# SMTCraft
+# SMTC Now Playing — Minecraft 26.1–26.4 Fabric 客户端模组
 
-<img src="src/main/resources/assets/smtcraft/icon.png" width="96" align="right" alt="SMTCraft">
+在游戏 HUD 里显示系统当前正在播放的媒体（歌名、歌手、专辑、进度、来源应用、专辑封面），
+并同步显示**歌词与翻译**（歌词来源：酷狗 / QQ 音乐，支持 KRC / QRC 词级时间轴），
+支持卡拉 OK 逐字高亮、可切换字体与配色主题。
+播放信息在 Windows 上来自系统媒体会话 **SMTC**（GlobalSystemMediaTransportControls），在 Linux 上来自
+**MPRIS2**（D-Bus 会话总线），两条路径都由模组**直接用 Java 读取**（FFM 直调系统库）：
+没有 PowerShell、没有外部进程、没有 JNI/JNA、没有额外前置模组。
 
-在 Minecraft 的 HUD 上显示**系统当前正在播放的音乐**：封面、曲名、歌手、专辑、进度条，加上带翻译、
-带逐字卡拉 OK 填充的同步歌词。曲目信息来自操作系统的媒体会话（Windows 用 SMTC，Linux 用 MPRIS2），
-歌词来自酷狗（KRC）、网易云音乐（YRC）与 QQ 音乐（QRC）。
-
-全部逻辑都在纯 Java 里：SMTC 走 COM/WinRT interop，MPRIS2 走 D-Bus，两者都通过
-**java.lang.foreign（FFM）直接调系统库**，不装辅助程序、不起外部进程、不联网中转。
-
-- 目标版本：Minecraft **26.1 – 26.4**（26.4 含快照 1–10，同一个 jar 通吃）· Fabric Loader ≥ 0.16.0 · Fabric API ≥ 0.155.3 · Java ≥ 25（客户端）
-- 平台：Windows 10/11、Linux（需 `libdbus-1`）；其它平台能启动但 HUD 不显示
-- 许可：MIT（第三方片段 Apache-2.0，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）
+作者：**123xzxc** · 许可：MIT · 环境：仅客户端（`environment: client`，不发送任何数据包）
 
 > **说明**：本 Mod 部分/全部由 AI 生成，所有改动均经人工审阅与实机验证后发布。
 
-## 功能
+---
 
-**面板**
+## 目录
 
-- 封面、曲名、歌手、专辑、进度条与时间、来源应用名；可选择隐藏其中任意一项
-- 封面支持普通方图与旋转黑胶（按曲目重置角度，暂停即停转，转速 0–240 °/s 可调）
-- 进度在采样之间按时间外推：播放器每 150 ms（默认采样间隔，可在 60–5000 之间调）发布一次位置，
-  中间由本地时钟补足，因此即使播放器几秒才更新一次，进度条也是连续走动的；取不到系统进度时可选择从 0 自行计时
-- 五种停靠位置（四角 + 居中）、缩放、宽度、透明度、圆角、阴影、偏移、三组颜色全部可调
-- 自适应宽度：按曲名 / 歌手 / 专辑的实际像素长度收放（歌词不参与）
-- 换歌宽限期（默认 1200 ms）：切歌瞬间沿用上一首快照，面板不会闪一下消失
-- 无媒体时按配置隐藏；暂停时可选隐藏；可忽略浏览器会话（Edge / Chrome 的网页播放不抢占 HUD）
-
-**歌词**
-
-- 当前行 + 上下文 1–4 行，自动带上歌词文件自带的翻译行；没有翻译时可选择上下双行显示
-- 卡拉 OK：当前行按进度从左到右填充强调色，扫描边缘按字心距离在底色与强调色之间混色，
-  所以是一道平滑推过的渐变，而不是一个个字突然变色（可关）
-- 卡拉 OK 增幅：播放头附近的字轻微隆起放大（增益与半径可调）
-- 长音缓行：长音按真实音符时长横向拉伸，没有逐字数据时按字长估计扫过速度
-- 逐字数据优先（KRC / YRC），没有逐字数据时退化为整行均分
-- 长句不再被截断：行宽超过面板时按「让已唱边缘停在 68% 处」横向滚动，新增行从行首开始
-- 字号、粗体、斜体、颜色、逐行偏移各自独立；歌词本机缓存 120 天，同一首歌不重复请求
-
-**界面与集成**
-
-- 游戏内设置界面（`F9`），四个标签页：显示 / 歌词 / 主题 / 字体；改完立即生效并写回配置
-- 六套主题（网易红、午夜蓝、极光、樱花、日落、单色），任意颜色都能单独用取色器改
-- 字体：默认 / 强制 Unicode / 自定义资源 id / **本机字体**（中英日其他四槽位各选一个 .ttf/.otf，
-  模组自动生成 `resourcepacks/smtcraft_fonts` 并热重载）
-- 播放时静音游戏音乐（只在有曲目且播放中压到 0，之后还原原音量）
-- 装 Mod Menu 后可从模组列表进入同一个设置界面
-
-## 环境要求
-
-| 项目 | 版本 / 说明 |
+| 章节 | 内容 |
 | --- | --- |
-| Minecraft | 26.1 / 26.1.1 / 26.1.2 / 26.2 / 26.3 / 26.4（含快照 1–10）；26.x 客户端已去混淆，无需 Yarn 映射 |
-| Fabric Loader | ≥ 0.16.0（开发使用 0.20.1） |
-| Fabric API | ≥ 0.155.3（必需） |
-| Mod Menu | 可选，只影响「从模组列表进设置」这一个入口 |
-| Java | 客户端 ≥ 25 |
-| Windows | 10 / 11，走 SMTC |
-| Linux | 需要 `libdbus-1`：Debian/Ubuntu `libdbus-1-3`、Arch `dbus`、Fedora `dbus-libs` |
+| [1. 功能](#1-功能) | HUD 显示内容与歌词能力 |
+| [2. 环境要求](#2-环境要求) | 游戏版本与依赖 |
+| [3. 安装](#3-安装) | 放进 mods 目录 |
+| [4. 使用](#4-使用) | 快捷键、设置入口、滚轮调延迟 |
+| [5. 配置文件](#5-配置文件) | `config/smtcraft/smtcraft.json` 全字段与默认值 |
+| [6. 工作原理](#6-工作原理) | SMTC 读取、采样、HUD 绘制 |
+| [6.1 歌词链路](#61-歌词链路) | 词源、匹配、缓存、逐字时间轴 |
+| [6.2 Linux 与 MPRIS](#62-linux-与-mpris) | 平台选择、播放器挑选、依赖 |
+| [7. 常见问题](#7-常见问题) | 没有歌词、封面不变、卡顿等 |
+| [8. 从源码构建](#8-从源码构建) | `build.sh` / Gradle、离线自测 |
+| [8.1 离线自测](#81-离线自测) | `test.sh` 与 `./gradlew selfTest` |
+| [8.2 线程模型](#82-线程模型) | 五条后台通道与退出顺序 |
+| [9. 目录结构](#9-目录结构) | 源码布局 |
+| [10. 版本记录](#10-版本记录) | 一行一版的摘要，完整历史在 CHANGELOG.md |
+| [11. 许可](#11-许可) | MIT 与第三方组件 |
 
-### 跨版本兼容
+## 1. 功能
 
-26.1 到 26.4 之间有几处客户端 API 变了签名，同一个 jar 要覆盖整段，就不能只按一个版本写。做法是
-**编译对齐区间最旧的 26.1**，差异在运行期解析：各垫片先探这一版到底有哪个类 / 哪个方法，走到存在的
-那条路上，实在没有才降级。目前有七处：
+- HUD 面板：封面、标题、歌手、专辑、进度条、时间、来源应用
+- 封面：真实专辑图（SMTC Thumbnail 流，PNG/JPG 原样解码为游戏贴图，LRU 12 张缓存）
+- 进度条按采样时间在客户端外推，700 ms 采样也能连续走动
+- 四角/居中五种停靠位置，缩放、宽度、透明度、偏移、颜色都可调
+- **游戏内设置界面**：按 `F9` 打开，改完立即生效并写回配置
+- **关于页**：设置界面第五个标签页显示当前版本，一键检查最新发布标签
+  （只读最新发布标签：先试站点的 `releases.atom`，再问 `api.github.com` 的 releases 接口，
+  最后读 `releases/latest` 的跳转，都不上传任何信息），
+  有新版时按钮直接打开发布页；失败时只显示一行中文原因（限流 / 连不上 / 证书或代理挡住 /
+  没读到），三条路的原始诊断串留在日志里。下面一行的 `检查更新` 开关关掉就完全不请求：
+  关于页与 Mod Menu 徽标答「更新检查已关闭」，按钮点一下就是「打开并检查」，
+  而不是拿旧答案或一句「正在检查」充数。
+  Mod Menu 的模组卡片上也会显示同一条更新提示，并带 网站 / 源码 / 问题反馈 三个链接
+- `F8` 一键开关 HUD（可在“按键设置”里改键）
+- 没有媒体播放时按配置隐藏；暂停时可选择隐藏
+- **歌词窗口**：当前行 + 上下文（1–4 行可调），自动带上歌词自带的翻译行，按进度滚动
+- **卡拉 OK**：当前行按播放进度从左到右填充强调色；扫描边缘做 10 px 羽化，按每个字的中心距离混色，
+  所以是一道平滑推过的渐变，不是一个个字突然变色（可关，关掉即整行高亮）
+- **独立字号**：歌词与翻译各有自己的字号滑条（0.6–2.0 倍），互不牵连
+- **黑胶唱片**：封面可切换成旋转的黑胶盘（按曲目重置角度，暂停即停转）
+- **播放时静音游戏音乐**：只在 SMTC 有曲目且在播放时把音乐音量压到 0，停止后原值还原
+- **字体**：默认 / 强制 Unicode / 本机字体（中/英/日/其他四槽位，带逐槽位效果预览）/ 自定义字体资源 id
+- **主题**：网易红 / 午夜蓝 / 极光 / 樱花 / 日落 / 单色 六套配色；主文字、次要文字、强调色、
+  歌词底色、卡拉 OK 色都能单独点开取色器改（色板 + RGB 滑条 + 直接输 #RRGGBB）
+- 歌词本机缓存 120 天（`config/smtcraft/lyrics/*.json`），同一首歌不会重复请求
+- **自适应宽度**：面板宽度按「曲名 / 歌手 / 专辑」的实际像素长度收放（设下限为设计宽度、
+  上限 470 px），歌词宽度不参与；关掉即固定宽度
+- **跑马灯**：曲名、歌手、专辑、歌词行超长时都左右循环滚动（曲名与歌词可分别关闭）
+- **换歌不闪**：切歌宽限期（默认 1200 ms）内沿用上一首快照，不会把切歌瞬间判成「没有媒体」而整个面板消失
+- **卡拉 OK 增幅**：播放头附近的字会隆起放大（增益 0–0.6、半径 0–80 ms 可调，可关）
+- **长音缓行**：正在唱的长音会被横向拉长成真正的卡拉 OK 长音。没有逐字数据时，扫过速度还按字长估计
+  （延长符、重复元音占更多时间）；有逐字数据时时间轴本身是精确的，这一项就负责按**真实音符时长**决定拉伸幅度
+  ——超过约 0.2 秒开始拉、0.7 秒拉满（约 42%），比本行中位数明显更长的字再加权，
+  真正的卡拉 OK 观感（可关，关掉就是每个字均分扫过）
+- **歌词粗体/斜体**：两个开关，作用于歌词与翻译
+- **无翻译双行**：没翻译的歌词默认显示成上下两行（可关），换行带 0.28 s 过渡；第二行用翻译字号
+- **圆角面板**：0–12 px 圆角；**进度条平滑**开关；**黑胶转速** 20–120 °/s（需先开黑胶封面）
+- **进度从头计时**：取不到播放进度时（如网易云官方客户端不写 SMTC Timeline）可选从 0 开始自行计时
+- **忽略浏览器会话**：只认音乐软件，Edge/Chrome 的网页播放不再抢占 HUD
+- **本机字体**：中 / 英 / 日 / 其他四种语言各选一个本机 `.ttf/.otf/.ttc`，模组自动生成
+  `resourcepacks/smtcraft_fonts` 资源包并热重载；字体 id 为 `smtcraft:systemfont`
+- **不显示曲绘时标题居中**（可关；来源应用名仍靠右）
+- 颜色设置项上方标注该颜色具体作用于什么；`key.categories.smtcraft.main` 显示为 **SMTCraft**
 
-| 差异 | 26.1 – 26.4 的分布 | 垫片 |
+## 2. 环境要求
+
+| 项目 | 版本 |
+| --- | --- |
+| Minecraft | 26.1、26.1.1、26.1.2、26.2、26.3、26.4（含 26.4 快照 1–10）——**同一个 jar 通吃**，见 2.1 |
+| Fabric Loader | 0.16.0 及以上（开发时使用 0.20.1） |
+| Fabric API | 0.155.3 及以上（编译时用 0.166.x 的模块，模组只用到其中五个类，见 2.1） |
+| Java | 25 及以上（`fabric.mod.json` 声明 `>=25`，26.x 官方即 JDK 25） |
+| 系统 | Windows 10/11（SMTC）；Linux（MPRIS2，需 `libdbus-1`）；其它平台不显示 HUD |
+
+### 2.1 跨版本兼容
+
+一个 jar 覆盖 26.1 到 26.4 快照 10。做法是：**编译对齐区间里最旧的 26.1**，运行期把七处
+签名与语义变化用反射消解，各自选到这一版真正存在的那条路。
+
+| 差异点 | 26.1 – 26.4-snapshot-N 的变化 | 本模组的处理 |
 | --- | --- | --- |
-| 封面纹理注册 | `DynamicTexture` 到 snapshot-2；snapshot-3 起只剩 `TextureResources` + `TextureManager.register`；snapshot-8 起改 `ExternalTextureProvider` + `registerProvider` | `render/CoverTexture`（三条路按 direct → provider → dynamic 取第一条能解析的） |
-| HUD 渲染入口 | 26.1–26.3 收 `(extractor, DeltaTracker)`；26.4 只收 `(extractor)` | `render/NowPlayingHud`（两个重载都实现） |
-| 屏幕背景钩子 | 26.1–snapshot-4 是 `(extractor, mouseX, mouseY, partialTick)`；snapshot-5 起只收 extractor，指针改由 extractor 提供 | `gui/ScreenHooks` |
-| 控件可见性 | 26.1–snapshot-1 是 public 字段；snapshot-2 起 protected + `setVisible` | `gui/Widgets` |
-| 按键编号 | `InputConstants.isKeyDown` 在 26.1–26.2 收 `(Window, GLFW 键码)`，26.3 起收 `(SDL scancode)`；`KEY_F7` 在 26.1 是 296、26.3 是 64 | `util/Keys`（按名字反射读这一版声明的常量） |
-| 滚轮事件 | 26.1–26.2 走 GLFW 回调，26.3 起走 SDL 事件监视 | `util/WheelWatch` |
-| 鼠标坐标 | extractor 在 26.1 不带 `mouseX/mouseY` | `gui/ScreenHooks`（缺失时退回 0,0 并在日志里注明） |
+| 按键状态 | 26.1–26.2 是 `InputConstants.isKeyDown(Window,int)`，26.3 起是 `isKeyDown(int)` | `util/Keys`：先试 `(int)`，退化到 `(Window,int)` |
+| 控件可见性 | 26.1–26.4-snapshot-1 是 public 字段 `visible`；snapshot-2 起变 protected 并给出 `setVisible(boolean)` | `gui/Widgets`：优先 `setVisible`，没有就写字段 |
+| 屏幕渲染入口 | 26.1–snapshot-4 是 `extractRenderState(extractor,int,int,float)`；snapshot-5 起只传 extractor（坐标改从 extractor 取） | `gui/ScreenHooks`：两个签名都声明在 Screen 子类上，实际绘制走同一个私有 `draw(...)` |
+| 封面纹理上传 | 26.1–snapshot-2 用 `DynamicTexture` + `TextureManager.register`；snapshot-3…7 删掉 DynamicTexture，只留 `TextureResources.from2dImage` + `register(Identifier,TextureResources)`；snapshot-8 起 `register` 也没了，要 `ExternalTextureProvider` + `registerProvider` | `render/CoverTexture`：按「direct → provider → dynamic」顺序试，第一条能解析的就用 |
+| HUD 渲染入口 | 26.1–26.3 的 `HudElement.extractRenderState` 收 `(extractor, DeltaTracker)`；26.4 只收 `(extractor)` | `render/NowPlayingHud`：两个重载都写成实方法，共用私有 `drawHud(...)`；26.4 没有 tracker，帧时间自己在 `wallStep()` 里量 |
+| 滚轮事件 | 26.1–26.2 走 GLFW（classpath 里没有 `org.lwjgl.sdl`），26.3 起走 SDL | `util/WheelWatch`：纯反射，SDL 那边用 `SDL_AddEventWatch`（返回 `false` 也算拒绝）；GLFW 那边换成自己的 `glfwSetScrollCallback` 并把每个滚动事件转发回 `MouseHandler`。两个后端在启动瞬间都可能还没就绪，所以安装失败会重试到十秒、成功后每秒把回调再按回去一次。**不碰 `SDL_SetEventFilter`**：SDL3 只有一个全局过滤器，抢下来会顶掉游戏自己注册的那个且无法还原 |
+| 按键编号 | 名字没变但含义变了：`InputConstants.KEY_F7` 在 26.1 是 296（GLFW 键码），在 26.3 是 64（SDL scancode，因为它直接按 scancode 索引 SDL 的键盘状态缓冲区）；Ctrl 同理 341/345 → 224/228 | `util/Keys.key("KEY_F7", 296)`：按名字反射读这一版自己声明的常量值，再交给 `isKeyDown`。写死任一编号都会在另一半版本上问成一个**别的键**——这正是「26.3 之外 Ctrl+F7 全部无效」以及早期滚轮微调失效的原因 |
 
-启动日志里有 `game api:` 与 `key codes:` 两行，就是这一版实际解析到的结果。前几处逐版本编译就能发现，
-后两处（HUD 入口、滚轮后端）只有真机启动才暴露——两版编译都合法，运行期才崩。
+启动时日志会打两行：`game api: cover=…, screen=…, widget=…, key=…, wheel=…` 写明这一版实际走了哪条路
+（`wheel=` 在第一个 tick 之前是 `unresolved`，之后另起一行写 `mouse wheel watch: glfw` 或 `: sdl-watch`），
+`keys: offset=…, LCONTROL=…, RCONTROL=…` 在第一个 tick 打：`offset` 是「歌词延迟调整」这个映射当前绑的键（改键后就跟着变），
+后两个是修饰键的键号（没有映射可查，26.1 是 341/345，26.3 起是 224/228）；
+`screen=` 与 `key=` 还会带后缀：`/coords(field)`、`/coords(method)`，两轴路线不同（或只有一轴在）时写成
+`/coords(mouseX=field,mouseY=absent)`——括号里两个值各自可能是 `field` / `method` / `absent`
+（这一版的 frame 把鼠标坐标放在哪——两版都是私有字段 `mouseX`/`mouseY`，只认 public 方法的查找会
+两轴都缺，页面就把整页画在 (0,0)：高亮全灭而点击照常）、`/scancodes`（这一版的键号是
+scancode）。同一个 tick 还会打 `screens: minecraft.screen`（或 `gui.screen()`、`unavailable`）——
+那是「打开菜单时隐藏」靠的那条反射路，答 `unavailable` 会走 WARN 并说明这个开关在本版不起作用。
+反馈问题时带上这三行就够了。
+解析不到只会降级（封面不显示、按键无响应、滚轮微调失效），不会崩；滚轮彻底装不上时 HUD 会自己说一句，
+不必翻日志。
+需要提醒的是：最后三处（HUD 渲染入口、滚轮、按键编号）都是**真机跑起来才暴露**的——前四处靠逐版本
+编译就能发现，这三处编译期两者都合法：26.1 上是入口类加载期炸、26.4 上是进世界后第一帧炸，
+按键编号则一句错话也不报，只是 Ctrl 永远读成「没按」。
 
-## 安装
+### 2.2 界面尺寸与缩放
 
-1. 在启动器里装 Fabric Loader（≥ 0.16.0）与 Fabric API ≥ 0.155.3
-2. 把 `smtcraft-<version>+mc26.1-26.4.jar` 放进 `.minecraft/mods`（同一个模组只留一个版本；文件名里的区间就是适用范围，26.4 的快照也用这一个）
-3. **启动器 JVM 参数加 `--enable-native-access=ALL-UNNAMED`（必做）**，老启动器写作
-   `-J--enable-native-access=ALL-UNNAMED`；同时去掉 `--illegal-native-access=deny`。
-   JDK 24+ 对 FFM 受限方法默认只警告，但部分启动器以 `deny` 启动；一旦被拒绝，
-   症状是「没有会话」、HUD 一直空白。打包 jar 的 manifest 里也写了这个属性，
-   但那只对 `java -jar` 生效——模组走 classpath 加载，启动器不会读它，所以这一步不能省
-4. 启动游戏，HUD 默认在左上角，按 `F8` 开关
-5. 可选：装 Mod Menu，模组列表里本模组右侧会出现 ⚙ 设置按钮
-6. Linux 额外装好系统 D-Bus 库；缺库时游戏照常启动，只是不显示 HUD（日志与设置页会写明原因）
+设置页与 HUD 都按**界面尺寸 2** 排版：尺寸 4 时整屏逻辑像素只有 480×270，14 行设置被压成 9 px 的文字；
+尺寸 1 时反过来，所有东西只有一半大小。模组因此自己乘一个系数 `2 / 界面尺寸`（限制在 0.4–2.0），
+页面按「设计像素」排（`ScaledScreen.vw()` / `vh()`），绘制时整体缩放一次：
 
-> 上传之后最常见的反馈是「HUD 空白 / 没有会话」，第一件事就是查启动参数里有没有
-> `--enable-native-access=ALL-UNNAMED`。
+| 界面尺寸 | 系数 | 页面效果 |
+| --- | --- | --- |
+| 1 | 2.0 | 与尺寸 2 观感一致 |
+| 2 | 1.0 | 原始设计（基准） |
+| 3 | 0.667 | 同上 |
+| 4 | 0.5 | 同上 |
 
-## 使用
+设置页「显示」页有一行 `跟随界面尺寸（以界面尺寸 2 为基准）`，默认开启；关掉就退回游戏自己的缩放
+（尺寸 4 下会重新挤成一团）。HUD 的 `scale` 也跟着乘同一个系数，`autoScale` 的自动缩小仍在其后生效。
+这一行的按钮文字**故意反着印**：显示「关」表示跟随已经开启，显示「开」表示跟随已关闭。
+
+行距不再随窗口压缩：页面至少 22 设计像素一行，放不下就滚动（右侧滚动条，鼠标滚轮/拖拽都能用）。
+跨在内容区边界上的那一行整行隐藏，而不是用 `enableScissor` 裁剪——裁剪矩形是按当前 pose 变换后与
+**逻辑像素**的指针比较的，缩放过的页面用它会让所有控件都判定为「未悬停」，高亮和提示全部消失。
+## 3. 安装
+
+1. 安装 26.1 – 26.4 中任意一版的 Fabric Loader，并把 Fabric API（≥ 0.155.3）放进 `mods`
+2. 把 `build/libs/smtcraft-1.0.2.20261123+mc26.1-26.4.jar`（文件名里的区间就是这个 jar 的适用范围）
+   放进 `.minecraft/mods`（同一 mod 只能留一个版本，旧的必须删掉）
+3. 启动器的 JVM 参数加上 `--enable-native-access=ALL-UNNAMED`（老版本启动器写作
+   `-J--enable-native-access=ALL-UNNAMED`），并去掉 `--illegal-native-access=deny`。
+   JDK 24+ 对此只警告不报错，缺这一项时表现为「没有会话」、HUD 空白；原因见第 7 节排障
+4. 启动游戏。HUD 默认出现在左上角
+5. 可选：装 Mod Menu（modrinth.com/mod/modmenu）后，模组列表里本模组右侧会出现 ⚙ 设置按钮
+6. Linux 额外需要系统的 D-Bus 库：Debian/Ubuntu `libdbus-1-3`、Arch `dbus`、Fedora `dbus-libs`。
+   缺库时游戏能正常启动，只是不显示 HUD（设置页与日志会写明原因）
+
+## 4. 使用
 
 | 入口 | 作用 |
 | --- | --- |
 | `F8` | 开关 HUD |
-| `F9` | 打开设置界面 |
-| `F7` | 调整歌词偏移（正负各一档，设置页里也能拖） |
-| 模组列表 → 本模组 → ⚙ | 同一个设置界面（需要 Mod Menu） |
+| `F9` | 打开设置界面（可改键） |
+| 模组列表 → 本模组 → ⚙ | 同一个设置界面（需要 Mod Menu，关闭后回到模组列表） |
+| 模组列表 → 本模组 → 网站 / 源码 / 问题反馈 | 由 `fabric.mod.json` 的 `contact` 块提供（需要 Mod Menu） |
+| 设置界面 → 关于 | 版本号、检查更新、发布页 / 问题反馈 / 项目主页三个链接 |
 
-三个键位都能在「选项 → 控制 → 按键设置」里改。设置界面底部显示当前读取状态（正在读取的曲目、
-来源应用、距上次采样毫秒数）与歌词状态（`searching` / `cached` / `no match` / `hit <曲名>`）；
-写入失败、配置损坏、媒体桥报错会以 `!` 前缀显示分类原因，具体堆栈在日志里。
+设置界面底部会显示当前读取状态：正在读取的曲目、来源应用、距上次采样的毫秒数，
+若读取失败会显示具体 HRESULT 错误，便于排查。界面底部还会显示歌词状态
+（`searching` 搜索中、`cached` 用缓存、`no match` 没匹配到、`hit <曲名>` 命中）。
 
+设置界面分五个标签页：**显示**（开关、滑条、停靠位置、偏移、进度、黑胶、自适应宽度、恢复默认）、
+**歌词**（歌词/翻译/卡拉OK/增幅/长音缓行/粗体斜体/跑马灯/双行开关、行数、偏移、字号、增幅增益与半径）、
+**主题**（六套配色 + 歌词色/卡拉 OK 色取色器 + 透明度/阴影 + 每个颜色上方一行说明）、
+**字体**（字体模式选择、中/英/日/其他四个槽位各选一个本机字体，每个槽位右侧用它自己的字体
+实时预览一行示例字，另有重建/清除资源包按钮）、**关于**（版本号、检查更新按钮、
+发布页/问题反馈/项目主页三个链接）。
+每个滑条松手即生效并写回配置；颜色按钮点开是取色器（色板 + RGB 滑条 + `#RRGGBB` 输入）。
 
-## 配置
+## 5. 配置文件
 
-配置文件是 `config/smtcraft.json`（启动器实例的 `config` 目录下），普通 Gson 文本，
-可以手改，改完约 0.5 秒内热加载；写坏时会把原文件改名成 `smtcraft.json.bad-<时间戳>` 再写默认值。
-歌词缓存是 `config/smtcraft/lyrics/*.json`，保留 120 天。
+`config/smtcraft.json`（首次启动自动生成；游戏内改设置会写回此文件，外部编辑后 500 ms 内热重载）：
 
-常用键（其余见文件本身，全部带默认值）：
-
-| 键 | 默认 | 作用 |
+| 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | HUD 总开关 |
-| `anchor` | `"top-left"` | `top-left` / `top-right` / `bottom-left` / `bottom-right` / `center` |
-| `offsetX` / `offsetY` | `8` / `8` | 相对停靠角的像素偏移 |
-| `scale` | `1.0` | 整体缩放 |
-| `panelWidth` | `300` | 面板设计宽度（像素） |
-| `backgroundOpacity` | `0.62` | 面板底色不透明度 |
-| `cornerRadius` | `8` | 圆角半径（0–24，与设置界面滑条同一来源） |
-| `theme` | `"netease"` | `netease` / `midnight` / `aurora` / `sakura` / `sunset` / `mono` |
-| `textColor` / `dimTextColor` / `accentColor` | `#FFFFFF` / `#B8BCC4` / `#3FDC6E` | 主文字 / 次要文字 / 强调色 |
-| `customColors` | `""` | 逗号分隔的自定义颜色键；非空时主题标签显示「自定义」 |
-| `adaptiveWidth` | `true` | 按标题长度自适应面板宽度 |
-| `vinyl` / `vinylSpinSpeed` | `true` / `38.0` | 黑胶封面与转速（0–240 °/s） |
-| `showLyrics` | `true` | 歌词窗口 |
-| `showTranslation` | `true` | 歌词翻译行 |
-| `karaoke` | `true` | 卡拉 OK 填充 |
-| `karaokePeak` / `karaokePeakAmount` / `karaokePeakRange` | `true` / `0.22` / `24` | 卡拉 OK 增幅 |
-| `lyricNoteEase` | `false` | 长音缓行 |
-| `wordTiming` | `true` | 使用逐字时间轴（关掉则整行均分） |
-| `lyricLines` | `1` | 歌词显示行数（1–4） |
-| `lyricOffsetMs` | `0` | 歌词相对播放位置的偏移（毫秒） |
-| `lyricFontSize` / `translationFontSize` | `1.45` / `1.20` | 歌词 / 翻译字号倍率 |
-| `lyricColor` / `karaokeColor` | `#FFFFFF` / `#3FDC6E` | 歌词底色 / 卡拉 OK 颜色 |
-| `lyricBold` / `lyricItalic` | `true` / `false` | 歌词与翻译的粗体 / 斜体 |
-| `marqueeLyrics` / `marqueeTrack` | `true` / `true` | 歌词行 / 曲名过长时滚动 |
-| `dualLineWhenNoTranslation` | `true` | 没有翻译时上下双行 |
-| `lyricOrder` | `"kugou,qq,netease"` | 歌词源优先级 |
-| `lyricFontMode` | `"default"` | `default` / `unicode` / `system` / `resource` |
-| `fontLatin` / `fontCjk` / `fontJapanese` / `fontOther` | `""` | 本机字体路径（四槽位） |
-| `muteGameMusic` | `true` | 播放时静音游戏音乐 |
-| `hideWhenNoSession` / `hideWhenPaused` | `true` / `false` | 无媒体 / 暂停时隐藏 |
-| `ignoreBrowserSessions` | `true` | 忽略浏览器媒体会话 |
-| `progressSmooth` / `progressFromStart` | `true` / `true` | 进度平滑 / 取不到进度时自行计时 |
-| `pollIntervalMs` | `150` | 采样间隔（60–5000） |
-| `swapGraceMs` | `1200` | 换歌宽限期 |
-| `debug` | `false` | 输出详细日志 |
+| `enabled` | true | HUD 总开关 |
+| `showArtwork` | true | 显示封面 |
+| `showAlbum` | true | 显示专辑行 |
+| `showProgress` | true | 显示进度条与时间 |
+| `showSourceApp` | true | 显示来源应用（如 VutronMusic） |
+| `hideWhenNoSession` | true | 无媒体时隐藏 |
+| `hideWhenPaused` | false | 暂停时隐藏 |
+| `anchor` | top-left | top-left / top-right / bottom-left / bottom-right / center |
+| `offsetX` `offsetY` | 8 / 8 | 像素偏移 |
+| `scale` | 1.0 | 面板缩放 0.5–3.0 |
+| `autoScale` | true | 窗口较小时自动缩小：面板不超过视口 55% 宽 / 72% 高，最小 0.45 倍 |
+| `followGuiScale` | true | 页面与 HUD 跟随「界面尺寸」缩放，以界面尺寸 2 为基准（见 2.2） |
+| `checkUpdates` | true | 关于页与 Mod Menu 徽标去读最新发布标签（唯一的网络请求，关掉就完全不发）；关掉后两处都答「更新检查已关闭」，点那个按钮就是打开并检查 |
+| `panelWidth` | 300 | 面板设计宽度（封面与文字自适应） |
+| `backgroundOpacity` | 0.62 | 背景不透明度 0–1 |
+| `borderOpacity` | 0.10 | 面板描边不透明度 0–1（旧版写死 10% 白线） |
+| `lyricsOnly` | false | 只画歌词带：不画封面、曲名、进度与时间 |
+| `hideWhenScreenOpen` | false | 打开任意界面（背包、设置、暂停、聊天）时隐藏面板 |
+| `artRound` | true | 平面封面是否倒圆角（黑胶唱片关闭时才有角可倒） |
+| `artRadius` | 4 | 封面圆角半径 0–12，HUD 像素；`artRound` 关掉后滑块失效 |
+| `shadow` | true | 文字阴影 |
+| `textColor` `dimTextColor` `accentColor` | #FFFFFF / #B8BCC4 / #3FDC6E | 支持 #RGB / #RRGGBB / #AARRGGBB |
+| `showLyrics` | true | 显示歌词窗口 |
+| `showTranslation` | true | 显示翻译行（酷狗 `[language:]` / QQ `contentts` / 缓存里的 `tlyric`） |
+| `karaoke` | true | 卡拉 OK 逐字填充当前行 |
+| `lyricLines` | 1 | 同时显示行数 1–4（1080p 下默认 1 行） |
+| `lyricOffsetMs` | 0 | 歌词整体偏移 −3000…3000 ms（播放器时间轴偏了就来调这个） |
+| `lyricOrder` | kugou,qq,netease | 歌词源尝试顺序（默认 酷狗 → QQ → 网易云兜底），歌词页「歌词来源」按钮循环切换：酷狗→QQ→网易云 / 网易云→酷狗→QQ / QQ→酷狗→网易云 / 仅网易云 |
+| `wordTiming` | true | 有词级数据时按真实逐字时间轴扫字（关掉则用字长权重估算） |
+| `lyricFontMode` | default | default / unicode（强制 Unicode）/ custom（资源 id）/ system（本机字体） |
+| `lyricFontId` | "" | `lyricFontMode=custom` 时的字体 id，如 `minecraft:uniform` |
+| `lyricFontSize` | 1.45 | 歌词字号倍率 0.6–2.0（1080p 默认 1.45） |
+| `translationFontSize` | 1.20 | 翻译字号倍率 0.6–2.0（1080p 默认 1.20） |
+| `lyricColor` | #FFFFFF | 歌词未唱部分颜色（跟随主题） |
+| `karaokeColor` | #3FDC6E | 卡拉 OK 已唱部分颜色（跟随主题） |
+| `translationColor` | #FFFFFF | 翻译行颜色（`showTranslation` 打开后生效） |
+| `candidateColor` | #B8BCC4 | 没有翻译时，第二行那句「下一句预览」的颜色 |
+| `vinyl` | true | 封面画成旋转黑胶盘 |
+| `muteGameMusic` | true | 播放时静音原版背景音乐（仅 MUSIC 声道） |
+| `theme` | netease | netease / midnight / aurora / sakura / sunset / mono |
+| `pollIntervalMs` | 150 | 采样间隔（100–5000）；媒体属性已按曲目缓存，调小只影响状态/进度刷新 |
+| `cornerRadius` | 8 | 面板圆角 0–12 px |
+| `adaptiveWidth` | true | 按曲名/歌手/专辑长度收放面板宽度（不含歌词） |
+| `centerTextWithoutArtwork` | false | 不显示曲绘时标题区整体居中（来源应用不居中） |
+| `marqueeTrack` | true | 曲名/歌手/专辑超长时跑马灯 |
+| `marqueeLyrics` | true | 歌词行超长时跑马灯 |
+| `swapGraceMs` | 1200 | 换歌宽限期，避免切歌瞬间面板闪一下 |
+| `progressSmooth` | true | 进度条平滑（关掉则直接显示采样值） |
+| `progressFromStart` | true | 取不到播放进度时从 0 开始自行计时 |
+| `ignoreBrowserSessions` | true | 忽略浏览器（Edge/Chrome 等）的媒体会话 |
+| `vinylSpinSpeed` | 38.0 | 黑胶转速 20–120 °/s（需开 `vinyl`） |
+| `lyricBold` `lyricItalic` | true / false | 歌词与翻译的粗体/斜体 |
+| `karaokePeak` | true | 卡拉 OK 播放头附近的字放大 |
+| `karaokePeakAmount` | 0.22 | 放大增益 0–0.6 |
+| `karaokePeakRange` | 24 | 放大半径：播放头前后多少像素内的字参与放大，0–80 |
+| `lyricNoteEase` | false | 长音缓行：长音横向拉长成卡拉 OK 长音；无逐字时扫过时间按字长估计，有逐字时拉伸幅度按真实音符时长 |
+| `dualLineWhenNoTranslation` | false | 无翻译时歌词按双行显示（第二行用翻译字号） |
+| `fontLatin` `fontCjk` `fontJapanese` `fontOther` | "" | 各语言槽位的本机字体绝对路径；空 = 用内置字体 |
+| `debug` | false | 详细日志开关（界面已不提供入口，需要时改配置文件） |
 
-## 工作原理
-
-```
-系统媒体会话 ──┬─ Windows: SMTC (COM/WinRT) ─┐
-               └─ Linux:   MPRIS2 over D-Bus ─┤
-                                              ├─→ MediaBridge（统一接口）
-歌词接口 ── 酷狗 KRC / 网易云 YRC / QQ 音乐 QRC ─┘        │
-                                                       ↓
-                         采样线程 → ProgressSmoother（外推播放位置）
-                                                       ↓
-          NowPlayingHud（渲染线程）← ArtworkCache（封面贴图）+ LyricService（歌词缓存）
-```
-
-- **媒体桥**：`media.MediaBridges` 按 `os.name` 选择 `SmtcBridge`（Windows）或 `MprisBridge`（Linux），
-  其它平台是 `NullBridge`。两者都在自己的线程里采样并发布不可变快照，渲染侧只读。
-- **FFM**：D-Bus 与 WinRT 都通过 `java.lang.foreign` 调系统库；Linux 侧 17 个 libdbus 符号的原型集中在
-  `mpris/DbusSymbols.java`，启动时逐条比对函数描述符，符号缺失或形状不符会在加载期直接报出符号名。
-- **歌词**：`LyricService` 按 `lyricOrder` 依次尝试三家接口，命中后解析成逐字时间轴并落盘缓存；
-  网络与解析都在后台线程，渲染线程只读已就绪的结果。
-- **线程**：一个 IO 池（写配置、写缓存）、一条「只跑最新任务」的车道（磁盘写入合并）、
-  一条媒体采样线程、一条歌词工作线程；预算常量集中在 `util/Budgets.java`，关停按
-  `util/ShutdownPlan.java` 的固定顺序执行（排空 → 关桥 → 写配置 → 落偏移 → 停车道 → 停歌词），
-  每步独立兜底，并有一个看门狗兜住超预算的情况。
-
-## 从源码构建
-
-### 前置
-
-- JDK 25（`java` / `javac` / `jar` 在 `jdk25/bin` 下；脚本同时认带与不带 `.exe` 的文件名）
-- bash（Windows 用 Git for Windows 的 bash）
-- 一个「工具链目录」，把所有编译依赖平铺进去：
+## 6. 工作原理
 
 ```
+HUD (NowPlayingHud)  ← volatile 快照 ← 采样线程 (SmtcBridge)
+                                        └── SmtcNative (FFM + WinRT)
+                                              ├─ RoGetActivationFactory  → SessionManager 静态类
+                                              ├─ RequestAsync (slot 6)   → IAsyncOperation<SessionManager>
+                                              ├─ GetCurrentSession (6) / SourceAppUserModelId (6)
+                                              ├─ TryGetMediaPropertiesAsync (7) → Title 6 / Subtitle 7 /
+                                              │     AlbumArtist 8 / Artist 9 / AlbumTitle 10 / Thumbnail 15
+                                              ├─ GetPlaybackInfo (9)     → PlaybackStatus 7 / PlaybackRate 10
+                                              ├─ GetTimelineProperties (8) → StartTime 6 / EndTime 7 / Position 10
+                                              └─ Thumbnail → ReadAsync（IRandomAccessStreamReference 6）
+                                                    → CreateStreamOverRandomAccessStream
+                                                    → IStream::Read 循环 → PNG/JPG 字节
+```
+
+要点（都是在本机实测得出的，写在这里免得以后踩坑）：
+
+1. **只用一个线程**：`SmtcNative` 必须在同一线程内初始化 MTA（`CoInitializeEx`/RoInitialize）并一直用它；
+   渲染线程只读 `volatile` 快照。采样线程是 daemon，退出游戏时由 `CLIENT_STOPPING` 关闭。
+2. **异步对象走 slot 8**：Windows 返回的 `IAsyncOperation<T>` 在本机 vtable 里 `GetResults` 在**第 8 个槽**，
+   按文档的 13 号槽调用会读到越界函数指针直接崩 JVM。现在只轮询 8 号槽（`0x8000000e` = 还没完成，继续等）。
+3. **HSTRING 必须 reinterpret**：`WindowsGetStringRawBuffer` 返回的 `MemorySegment` 长度是 0，
+   直接按字符读会抛异常并被吞成空串。读取前先 `reinterpret(length * 2 + 2)`。
+4. **封面只在换歌时拉取**：按 `标题/歌手/专辑` 生成 key，key 不变就不重复读流，避免无谓开销。
+5. **FC/时间单位**：Timeline 的 `TimeSpan` 是 100 ns tick，除 10000 得毫秒。
+
+### 6.1 歌词链路
+
+```
+LyricService（daemon 线程 smtcraft-lyrics）
+  ├─ 以「标题\u0001歌手」为 key 去重，切歌才动作
+  ├─ 本地缓存 config/smtcraft/lyrics/<sha1(key)>.json
+  │    命中 120 天；「这首歌没有歌词」只缓存 6 小时
+  │    缓存里同时记录 provider 与各格式原文（lrc/tlyric/yrc/qrc/tqrc/krc）
+  ├─ 按 config.lyricOrder 依次尝试（默认 kugou,qq,netease，可在歌词页循环切换）
+  │    kugou  ：lyrics.kugou.com/search（只用歌名）→ /download（base64 KRC）
+  │    qq     ：musicu.fcg 搜索 → lyric_download.fcg（content=QRC 密文，contentts=译文）
+  │             解密失败时回落到 fcg_query_lyric_new.fcg 的 base64 LRC
+  │    netease：/api/search/get/web 搜索 → eapi/song/lyric/v1（yrc 逐字 + tlyric 译文）
+  │             取不到就回落旧 /api/song/lyric；作为最后一档兜底，永远排在最后
+  │    三个都没有 → 停手，HUD 显示「没有歌词」，不再等待网慢的词源
+  ├─ 候选打分（SongMatch）：55×标题相似度 + 25×歌手相似度 + 20×时长项，≥62 采信
+  │    相似度取「字符二元组 Dice」与「1 − 编辑距离/长度」的较大值，
+  │    所以标题错一个字也能认（愛がやえに → 愛がゆえに）；
+  │    标题不像（<0.72）直接否决，歌手对不上（<0.45）除非时长几乎一致才放行，
+  │    时长差 >60 s 否决；标题与歌手在两处对调也能识别（SMTC 与平台字段颠倒时常见）
+  │    版本标记必须一致：括号段与「 - 」之后认 14 类版本词（remix/live/伴奏/TV size…），
+  │    两侧标记集合相等才继续，同一种版本还要求描述词相似（US40 Remix ≠ Cloudy.exe Remix）；
+  │    一侧写了描述词、另一侧只写了版本（Euphoria (US40 Remix) ↔ Euphoria (Remix)）也判不同；
+  │    feat. 只扣 8 分不改判定（换嘉宾 = 换人声，不是换歌）
+  ├─ 词源质量分（满分 6）：有逐字 +4，译文覆盖率 ≥50% +2、≥10% +1
+  │    满 6 分才停止轮询；不到 6 分会继续问下一个词源，并取「逐字」那张表，
+  │    再按最近行（±1.2 s）把别家译文覆盖率更高的译文贴过来，贴好的译文会回写进缓存
+  │    酷狗一次返回多个 KRC 候选，逐个解析后按覆盖率择优（带 [language:] 的不一定最好）
+  └─ LrcParser / SyllableParsers → LyricTrack
+       yrc  → 行级 + 词级（绝对毫秒）
+       QRC  → 行级 + 词级（绝对毫秒）
+       KRC  → 行级 + 词级（词时间相对行首，解析时加行首）
+```
+
+三种词级格式都由 `Crypto` 解包：
+
+| 格式 | 封装 | 解密 |
+| --- | --- | --- |
+| QRC（QQ 音乐） | hex 文本 | 3DES-ECB（key `!@#)(*$%123ZXC!@!@#)(NHL`）→ zlib → 去 BOM |
+| KRC（酷狗） | base64 | 去 4 字节头 → 16 字节 XOR 掩码 → zlib → 去首字节 |
+| YRC（网易云） | 明文 | 无需解密，`[start,dur](wStart,wDur,0)词`；由 eapi 直接返回 |
+
+> 现状：酷狗 KRC 与网易云 YRC 是真正能提供逐字的两个词源（酷狗按字切分，KRC 候选里带
+> `[language:]` 的那份还附带整篇译文；网易云 eapi 同时返回 `yrc` 逐字与 `tlyric` 译文）。
+> QQ 的 `lyric_download` 换了 `content` 的密钥，3DES 解出来不是 zlib 流（试遍 DESede/DES、
+> ECB/CBC、各种补位与密钥顺序都不成立），所以 QQ 目前只贡献行级 LRC 与 `contentts` 译文。
+>
+> 网易云 eapi 细节：POST `https://interface3.music.163.com/eapi/song/lyric/v1`，参数
+> `params`（AES-128-ECB 加密后的 hex，明文为 `路径-36cd479b6b5-参数JSON-36cd479b6b5-md5摘要`，
+> 摘要路径是 `/api/song/lyric/v1`）+ `header`（客户端伪装 JSON 与同序 Cookie）。
+> 老接口的 JSON 行歌词 `{"t":1370,"c":[{"tx":"夜"}…]}` 会先转成 `[mm:ss.mmm]歌词` 再解析。
+>
+> 译文清洗：各家都用 `//`、空串或直接重复原文表示「这一行没有译文」，三种情况一律当空处理，
+> 否则副字幕行会重复一遍原文；KRC 的 `[language:]` 偶尔整体错位一行（把下一句原文当译文），
+> 这类「译文等于另一行原文」的行也会被判为无译文；酷狗 / QQ 塞在译文块开头的
+> 「以下歌词翻译由文曲大模型提供」这类水印也一并过滤。
+
+网易云已停用（`music.163.com/api/song/lyric` 现在需要签名，返回空），历史要点记在这里备查：
+
+- 请求要带桌面版 `User-Agent`（`Referer`、`Cookie: appver=2.9.7; os=pc` 也带上更稳），否则返回空。
+- 用 `/api/song/lyric`（老接口）并带 `yv=-1`：老接口同时返回标准 LRC 与 yrc 逐字表，
+  v1 的形状随歌曲变化，解析器要写两套。
+- 歌词里 `[00:00.000] 作词 : xxx` 这类制作信息是定时行，解析时按「时间戳 < 15 s 且文本匹配
+  作词/作曲/编曲等」丢弃，否则会在开头刷出几行字幕。
+
+歌词行末时间取「下一行开始时间」，没有下一行时用估算值（拉丁字符 120 ms/字、CJK 240 ms/字，
+夹在 1.4–9 s 之间），这样间奏不会被某一行的卡拉 OK 扫到底。
+
+### 6.2 Linux 与 MPRIS
+
+```
+HUD (NowPlayingHud)  ← volatile 快照 ← 采样线程 (MprisBridge, smtcraft-mpris)
+                                        └── MprisBus (FFM → libdbus-1)
+                                              ├─ ListNames         → org.mpris.MediaPlayer2.*
+                                              ├─ Properties.GetAll → PlaybackStatus / Metadata / Rate
+                                              ├─ Properties.Get    → Position（微秒）、Identity
+                                              └─ mpris:artUrl      → file:// 或 http(s)://
+```
+
+平台在启动时决定一次：`MediaBridges.create()` 看 `os.name`，Windows 走 SMTC、Linux 走 MPRIS，
+其它平台给一个空实现（HUD 不显示，设置页状态行写明「当前平台没有媒体会话桥」）。
+
+要点：
+
+1. **没有「当前会话」**：MPRIS 里每个播放器都是总线上的独立总线名，所以每轮对所有
+   `org.mpris.MediaPlayer2.*` 各做一次 `Properties.GetAll`，按「正在播放 > 有曲目 > 非 Stopped」排序；
+   当前播放器额外加 3 分保持粘性，否则两个空播放器会每轮把卡片抢来抢去。
+2. **依赖**：发行版的 `libdbus-1`（Debian/Ubuntu `libdbus-1-3`、Arch `dbus`、Fedora `dbus-libs`）。
+   缺库时 `MprisBus` 直接报 `libdbus-1 is not installed (package: dbus / libdbus-1-3)`，
+   采样线程继续按间隔重试，装好库、重启游戏即可，不需要重装模组。
+3. **进度**：优先读 `Position`（微秒，除 1000 得毫秒）；播放器不实现该属性时回落到墙钟累加。
+   `Rate` 参与外推，暂停立即停住；播放器报的时间轴以 `mpris:length`（微秒）为总长。
+4. **封面**：`mpris:artUrl` 支持 `file://`（本地缓存图，常见于网页播放器）与 `http(s)://`，
+   单张上限 4 MiB、连接 1.5 s / 读取 3 s 超时；失败 6 s 后重试，连续 3 次失败就放弃到换歌为止，
+   解码与降采样仍在 `smtcraft-cover` 线程，渲染线程只做纹理上传。
+5. **浏览器**：Firefox / Chromium 也会注册 MPRIS 播放器，「忽略浏览器会话」用的是同一份白名单，
+   开关同样生效。
+6. **线程**：`MprisBus` 的创建、每次调用、关闭都在 `smtcraft-mpris` 这一个线程里
+   （FFM 的 `Arena.ofConfined()` 不允许跨线程使用）；总线连续 5 轮没有响应才判定失效并重连。
+## 7. 常见问题
+
+**HUD 一直显示“没有正在播放的媒体”**
+先确认系统音量键旁边能看到的媒体卡片是否正常（Win+ 音量遮罩）。VutronMusic、Spotify、Edge、
+Windows 媒体播放器等会注册 SMTC；部分老播放器（如 foobar2000 默认配置）不注册。
+
+**封面不显示，但歌名正常**
+有些播放器只提供元数据、不提供 Thumbnail（返回空引用）。此时其余字段照常显示，封面位置留空。
+
+**打开设置界面后没反应**
+`F9` 可能被其他模组占用，去“选项 → 控制 → 按键设置 → SMTC 正在播放”里改键。
+
+**有逐字但没译文 / 有译文但不是逐字**
+
+现在按「有逐字 +4、译文覆盖率 ≥50% +2 / ≥10% +1」打分，拿满 6 分才停：只有逐字没译文的歌会继续去问下一个源，
+把别家覆盖率更高的译文按最近行贴到逐字表上（差 1.2 s 以内才算同一行），贴好的结果会写回缓存。
+酷狗一次会返回好几个 KRC 候选，逐个解析后按覆盖率择优——带 `[language:]` 的那份不一定最好（有时整块只有一行罗马音），
+这正是之前「第二行显示的是下一句日文而不是译文」的原因。若仍缺译文，多半是这首歌三个源都没有中文翻译，
+可在歌词页换「歌词来源」顺序再试。
+
+**歌词显示的是别的歌 / 搜不到就干脆不显示**
+搜索现在宁可什么都不显示，也不给错歌词：标题必须先通过相似度门槛（字符二元组 Dice ≥ 0.72），
+歌手逐词比对，时长只用来加权——相差一分钟才否决（SMTC 常报剪辑版长度）。旧版本把"标题里含同一个词"也算命中，
+所以搜 A 会拿到 B。设置 → 显示 → 「清除缓存」可以立刻丢掉旧匹配器写下的缓存并重新搜索。
+
+**同名不同版本会串歌词（remix / live / 伴奏 / TV size）**
+以前比较前会把版本词删掉——`Euphoria (feat. X) [US40 Remix]` 与 `Euphoria` 都变成 `euphoria`，
+于是播 remix 拿到原版的词、播原版拿到 remix 的词。现在版本标记参与判定：括号段（含全角括号、
+方括号、【】、「」）与最后一个「 - 」之后认 14 类版本词（remix、live、伴奏/纯音乐/instrumental、
+karaoke、acoustic、加速/nightcore、slowed、TV size、cover/翻唱、demo、extended、钢琴版、管弦、8D），
+两侧的标记集合必须完全相同；同一种版本还要求描述词相似（`US40 Remix` 与 `Cloudy.exe Remix`
+是两个录音，判不同）。`feat.` 单独处理：换嘉宾是换人声不是换歌，只从分数里扣 8 分，让同嘉宾的候选胜出。
+缓存版本升到 5，按新规则读到旧缓存时若发现里面记的歌名跟自己不是同一版本，直接删掉重搜；
+酷狗的关键词搜索也改成先拿完整标题试、再退到去掉括号的歌名（它把 `[US40 Remix]` 登记在自己的名字下）。
+
+「描述词」这一半曾把**空名字当通配符**：目录里最常见的写法就是 `Euphoria (Remix)`——只声明
+"这是另一个版本"、不声明是谁的版本。它以前与 `(US40 Remix)` 以 88 分通过（门槛 62），于是又回到串词。
+现在只要一侧写了名字、另一侧没写，就判成另一份录音（硬拒，不是扣分：报告给的两条验收线彼此矛盾，
+88 减任何常数都只是赌一个门槛）；两侧都没写名字时照常放行，因为那本来就无从核实。
+反方向的代价也是真的：把版本名写进歌手字段的平台条目会搜不到。
+
+搜索顺序也改了：**完整标题排第一**（只有它还带 `[US40 Remix]`），去版本词的写法排在后面；
+每家平台的候选上限从写死的 24 条改成「查询数 × 8」，否则专辑非空时第 4 条查询永远轮不到。
+酷狗的多轮关键词搜索也不再"列表非空就停"，改成每轮重新打分、够门槛才停——否则一轮里全是被
+版本闸门否决的版本时循环提前结束，整首歌都判成没有歌词。
+
+`remastered` 有意**不算**另一种版本：它只差几帧母带处理，却是半个老曲库的默认后缀，列入会误杀
+大量正确命中；60 秒的时长否决已经够拦剪辑版。`clean()` 仍然会把这个词删掉。
+代价：平台上把版本写在歌手字段、或只在标签里写版本的条目，现在可能搜不到——宁可不显示，
+也不给错词的歌词。
+
+**播放器不报进度（网易云、某些浏览器）时歌词不动**
+这些应用只报"在播放"，不报时间轴。歌词现在按墙钟从这首歌第一次出现开始计时推进，暂停时停表；
+进度条仍受「进度从零计起」开关控制。
+
+**有逐字歌词时，长音缓行还有用吗**
+有。逐字时间轴给的是"什么时候唱到哪个字"，长音缓行给的是"这个长音长什么样"：扫光按真实窗口推进，
+正在响的长音继续横向拉长（0.21 s 起、0.72 s 拉满，最多 42%），所以副歌的长音会比短促的字更宽、更有卡拉 OK 的推拉感。
+两项可以各自关掉。
+
+**翻译行显示的是罗马音或假名读音**
+有些词源会把读音填在译文位置（QQ `contentts`、酷狗 KRC 的 `[language:]` 都可能给日文罗马音）。
+判定分两条：原文含假名且译文是「以拉丁字母为主」的行判为罗马音；原文含汉字且译文纯假名判为读音。
+「以拉丁字母为主」= 拉丁字母数是其它字母的两倍以上，并且大写字母不超过四分之一——
+所以带零星假名或汉字残渣的罗马音（`xio kaze ni so ーto`、`suna ni 踊lu`、`Splash ha ji ke lo`）都会被清掉，
+而真正的中文译文（全是汉字）不会。清出来的空位由其它词源补（见上一条）。
+歌词页的「第二行显示读音（罗马音／假名注音）」开关关着时执行上面的清洗，打开后读音原样显示。
+副作用：日文原曲的英文译文（全小写、无大写）也会被当成罗马音；需要看的话打开那个开关，
+或者换成中文译文的词源。
+
+**歌词比声音快一点 / 慢一点，怎么只调这一首**
+歌词页与 HUD 无关，调整用的是**单曲**偏移：按住「歌词延迟调整」键（默认 F7，可在「按键设置 → SMTCraft」里改）
+再滚动鼠标滚轮，每格 ±50 ms，向上滚歌词提前、向下滚推迟，屏幕底部会显示当前值；
+Ctrl + 按一次该键归零。这个键和 `F9` 一样在「按键设置」里改，改完立刻生效——模组只问这个映射，
+不再另外读物理 F7，所以旧键不会继续动偏移。偏移按「曲名 + 歌手」存进歌词缓存目录的 `offsets.json`，
+下次再放这首歌自动生效，不会被其他歌继承；「清除缓存」按钮会一起清掉。
+
+**按 F7 再滚轮没反应 / Ctrl+F7 归零不生效**
+这两条在 1.0.0 的多版本单 jar 上都踩过坑，现在一起修了，成因有四个：
+
+1. **滚轮监视根本没装上，而且没人说。** 26.4 上 SDL 的事件监视在启动瞬间被拒（那时事件子系统还没起来），
+   旧代码第一次失败就把整条路标成「不可用」永久放弃；26.1/26.2 的 GLFW 回调则会在
+   `MouseHandler.setup` 里被游戏自己换回去。现在失败只算「还没就绪」，一路重试到十秒，
+   装好后每秒把回调再按回去一次，`logs/latest.log` 里会有一行 `mouse wheel watch: sdl-watch`
+   （或 `glfw`）；十秒后仍不行会打 `mouse wheel watch never installed (...) : <原因>`，
+   HUD 也会自己说一句「滚轮微调没能装上」，不必翻日志。故意不去抢 SDL 的全局过滤器
+   （`SDL_SetEventFilter`）：SDL3 只有一个，抢下来会顶掉游戏自己注册的那个且无法还原。
+2. **修饰键问错了编号。** 26.3 换成 SDL 之后，`isKeyDown(int)` 的参数从 GLFW 键码变成了
+   SDL scancode（`InputConstants.KEY_F7` 也从 296 变成 64），而本模组一直用 341/345 这组 GLFW
+   数字——在 26.3/26.4 上问的是别的键，于是 Ctrl 永远算没按。写死哪一套都会在另一半版本上错，
+   所以现在按名字问这一版自己声明的值：`Keys.key("KEY_LCONTROL", 341)`，启动日志的
+   `keys:` 那行（第一个 tick 才打，原因见第 7 节）会把它打出来。
+3. **归零依赖按键的「点击」标志。** 旧写法在 tick 里消费 `KeyMapping.consumeClick()`，
+   一旦修饰键读错，这个点击就一直排队等着、永远换不出归零。现在改成看「该键按下 + Ctrl 按下」的上升沿：
+   按住不放只归零一次，松开再按才会再归零。
+4. **改了键还认旧键。** 「按住调整键」的判定原本先问映射、映射没按下就问物理 F7，于是把键改成别的
+   以后按 F7 照样能滚轮改偏移（滚轮门也挂在这个判定上，等于两个功能一起认旧键）。现在只认映射：
+   `offsetHeld()` 就是 `offsetKey.isDown()`，没有第二条路；`test.sh` 加了一条护栏，src 里再出现
+   裸读 F7 的写法会直接让构建失败。
+
+自测里没有键盘与窗口，这四条分两半验证：**静态的那半**由 `ShimProbe` 负责——它把两条路线都强制解析一遍
+（`Keys.resolveForProbe()` 与 `WheelWatch.resolveForProbe()`），断言按键重载确实存在、发出去的键号与这条重载的
+编号体系相符（就 341 这对值而言：scancode 装得进一个字节，GLFW 的 341 装不进），滚轮后端必须解析到
+`glfw` 或 `sdl` 二者之一；**活的那半**只能看真机日志——装好后 `logs/latest.log` 里会出现
+`mouse wheel watch: glfw` 或 `: sdl-watch`，而入口那一行先写 `wheel=unresolved`（为什么必须先不解析见 8.1 节）。
+三个实例（26.1 / 26.3 / 26.4-snapshot-10）装的是同一个 jar。
+
+**设置页在小窗口里看不见最下面的按钮**
+窗口矮到放不下整页时设置页会变成可滚动：滚轮上下移动内容，右侧出现一条细滚动条指示当前位置，
+标签栏与底部状态行固定不动。滚出视口的控件是隐藏而不是压扁，所以不会点到看不见的按钮。滚一格在屏幕上固定走 14 px，不随界面尺寸
+变——设计空间的步长是 `14 / ui`（`UiScale.scrollStep`），界面尺寸 1 与 4 下的滚动观感因此一致（AUDIT-35-3）。
+
+**改了设置，重启后又回到旧值**
+两条路都会造成这个观感，现在都堵上了。一是**热重载与保存抢跑**：热重载在后台线程 stat 到一份旧快照，回投却要等下一个客户端 tick，而保存的写盘是立刻执行的——只要 stat 与用户那次改设置几乎同时发生，旧快照就会盖掉内存里的新值，而 loadedMtime 记的又是刚保存的那个时间，于是再也不会重读文件，下一次保存就把用户那次改动永久写没了。现在保存每落盘一次就让一个代数加一，回投时对不上就丢弃这份旧快照。
+二是**写盘失败没人告诉你**：配置目录只读、磁盘满、杀毒软件叼着文件（Windows 上最常见的原子移动失败）时，以前只在日志里写一行、把原因存进一个没人读的字段；现在设置页底部状态行会以 ! 前缀显示一条分类提示（保存失败／重新读取失败／配置损坏），原始异常仍写进日志。
+三是**落盘之后读不到自己的时间戳**：写成功了但 stat 失败（杀毒软件短暂锁文件），以前 `loadedMtime` 会留着上一个版本的值，下一次热重载就判定「文件变了」，把我们刚写的旧快照读回来盖掉内存里还没保存的改动。现在这种情况记成一个明确的「不知道」（哨兵 -1），下一轮先采纳真实时间戳并跳过这一次重载，不会自己盖自己。
+
+**退出游戏时会停一两秒**
+关停要依次做五件事：排空后台 IO 队列、等媒体桥收尾、把配置与歌词偏移表再写一次、停掉后台线程池、让歌词线程收尾。
+Linux 上媒体桥一轮最长能到 10 秒（总线查询 2 s、探测 0.6 s、位置与身份各 0.5 s、封面连接 1.5 s、读图 5 s），
+所以这些数字只有一个来源（`util/Budgets.java`），而且是**一条完整的加法**：
+桥一轮 10.5 秒 + 排空 2 秒 + 写盘预留 1.5 秒 + 停线程池 3 秒 + 歌词收尾 3.5 秒 = 20.5 秒。
+桥排在写盘之前并给自己留出预留，所以不会出现「前面的步骤把时间花光、最后慢的那步只拿到零头」；
+排空这一步在「早写」与步骤序列里只**花一次**（早写已经等过就不再等），所以那 2 秒不会从桥的份额里再扣一遍；
+每一步都从「剩余预算」里取，跑光了就只留 1 毫秒的下限（`join(0)` 是永远等，不能拿 0 当上限）。
+这个上界只在「慢封面 + 同时退出」的极端情况下才用得上，平时几毫秒就结束。
+
+而且这段等待**不在客户端线程上**：点退出后立刻起一个非 daemon 的 `smtcraft-shutdown` 线程收尾，
+窗口不再等它，所以既不会出现「窗口变灰、转圈、十几秒后才消失」（Windows 五秒没有消息泵就会把窗口标成未响应），
+也不会留下进程结束前还在跑的线程——JVM 退出前会自己等这个非 daemon 线程。
+代价是「进程还在」不再有窗口提示，所以收尾会打两行日志：
+`shutdown: stopping the bridge, the background lanes and the lyric worker` 与 `shutdown: finished in N ms`；
+万一某一步真卡在不可中断的 native 调用里、超过「预算 + 1.5 秒」，会有一条**独立的看门狗线程**
+打出 `smtcraft: shutdown still running after 22000 ms, halting the process` 并直接 `halt(0)` 把进程带走
+（否则非 daemon 线程会让进程永远留在任务管理器里）。看门狗不依赖收尾序列的返回值——收尾正常结束时它会被
+`interrupt()` 取消，所以诚实退出绝不为它多等；也正因为 `halt` 不跑 shutdown hook，那句话是先写 stderr 再写日志的。
+退出码是 **1** 而不是 0：这条路径意味着收尾没按时结束，不该在启动器和脚本眼里算正常退出。
+另外注意「非 daemon 线程会让 JVM 等它」只对 `main` 正常返回成立，崩溃或强制退出走 `Runtime.exit` 时不等人，
+所以收尾一开始就先把配置写一次。
+每一步各自 try/catch，某一步失败只会少做那一步，不会连带跳过后面的配置写入与偏移表落盘。
+
+**第一次搜索没有结果会不会就空着**
+不会。一次解析结束后如果一条都没拿到，会等 0.4 s → 2.5 s → 5 s 共重试三次（多数歌都在某个源里，
+第一页偶尔返回空、接口在切歌瞬间被限流、或者播放器还没把曲目信息写全，都是常见抖动）；
+三次都空才显示「没有歌词」，并且不写负缓存，切回来会重新搜。停在「没有歌词」之后，
+同一首歌每 15 s 还会再问一次（最多三次），所以一次网络抽风不会让整首歌都没词。
+
+单个词源的某一次查询失败也不再连坐：一条搜索被 503 或返回一段 HTML，只是这条查询作废，
+下一组关键词、同一词源的其余步骤照常走。
+
+**切歌后偶尔显示「没有歌词」**
+见上一条：切歌瞬间是三个词源同时被问的最密集时刻，容易被限流；现在的重试与复查会自动补上。
+如果某首歌确实全网都没有谱面，「显示」页底部的**清除本曲缓存**可以立刻重搜一次。
+
+**多行歌词时同一句出现两次**
+「无翻译双行」是用翻译槽位预览下一句，只在**单行**歌词时才有意义；开 2 行以上时下一句本来就是一整行，
+两套一起开就会把同一句画两次。现在双行预览只在歌词行数为 1 时生效，多行模式直接按行排布。
+
+换行过渡也改成了**整表上滚**：正在唱的行从第二格升到第一格，下一句从面板底部升进第二格，
+上一句顺势滑出可视区（0.28 s，超出歌词区域的部分被裁剪）。之前是整块先向下、再滑回来，
+所以看起来像整片文字在抖一下；跳转（拖动进度条）时仍然直接换行，不做滚动。
+
+**译文行显示成下一句原文**
+这通常是「这一行确实没有译文」时启用了「无翻译双行」（第二行自动显示下一句）。两种情况会让整篇译文只剩零星几行：
+一是某份 KRC 的 `[language:]` 整体错位一行，把下一句原文当成了译文（现在这类行判为无译文）；
+二是选中的那份歌词只有一行罗马音译文就被当成「已有译文」而不再问其它源（现在按覆盖率判断，并会跨源补齐）。
+想要的是「没有译文就不显示第二行」的话，把歌词页的「无翻译双行」关掉即可。
+
+**长歌词向右滚动时会自己跳回开头**
+上一版跑马灯按固定时间循环（停 1.3 s → 滑到底 → 停 1.3 s → 回跳），所以唱到一半会被拽回左边。
+现在歌词行不再走时间循环，而是**跟着卡拉 OK 播放头走**：播放头固定在可视区的 68% 处，
+唱到哪文字就往前推多少，整行唱完停在末尾，不会倒退。曲名/歌手/专辑的跑马灯仍是循环滚动。
+
+**长句开头被切掉，只剩后半截**
+一行比面板宽时，原来是「按播放头直接定位」——中途才变成当前行（拖动进度条、歌词晚到一步、
+播放器位置卡了一下）就会一下跳到句子末尾，看起来像开头被截断。现在改成**从第一个字开始**：
+新行出现时横向位移归零，随后以最高 360 px/秒追赶播放头，所以永远是从前到后滚一遍，
+不会先露出尾巴。顺手修了两处：已经唱完、正在上滑淡出的那一行保持它停下时的位置（不再重新定位到末尾）；
+关掉「歌词跑马灯」时超宽的行改为**左对齐**而不是居中，这样至少开头是完整的，只有尾巴被裁。
+
+**卡拉 OK 歌词会往回闪一下**
+播放中偶尔有一个采样报告「暂停」（缓冲、刚起播、媒体会话被播放器重建），而暂停时的位置还是 app 上一次发布的那个值；
+上一版收到暂停就重置平滑器，于是屏幕上的位置从「已经外推到的 10.8 s」退回「app 说的 10.4 s」，
+填充边缘、当前行索引都往回跳一格，下个采样再追回来——看起来就是闪了一下。现在两层各管一段：
+`ProgressSmoother` 暂停时保持屏幕上已画出的位置、只刷新锚点（恢复时从看得见的地方继续，不再重置）；
+`render/LyricClock` 再挡一次：采样回退在 1 200 ms 以内先保持不动，超过 400 ms 才采纳，
+只有回退超过 1 200 ms（真的拖动进度条）才立刻跟随。换曲、重置时直接采纳，不会把新歌拖在半路。
+
+**歌词不显示**
+1. 曲名对不上（比如 Remix、罗马音、括号里的合作歌手）：设置 → 歌词标签页底部会显示
+   `no match (N hit(s))`，可先按平台网页确认真名。
+2. 纯音乐 / 平台未收录：酷狗、QQ、网易云都返回空，HUD 直接显示「没有歌词」（不再一直转「加载中」）。
+3. 歌名对但歌词慢半拍/快半拍：调 `lyricOffsetMs`（−3000…3000 ms）。
+4. 某个词源超时会在日志里留 WARN；每个词源单独限时 10 s（总预算 32 s），酷狗慢不会把 QQ 和网易云饿死。
+
+**自定义字体没效果**
+`lyricFontId` 必须是已加载的字体资源 id（原版有 `minecraft:default`、`minecraft:uniform`、
+`minecraft:alt`、`minecraft:illageralt`；资源包字体用 <命名空间>:<路径>）。写错不会崩，会回退成默认字体。
+
+**选了本机字体但看起来没变**
+本机字体走的是运行时生成的资源包 `resourcepacks/smtcraft_fonts`（字体 id `smtcraft:systemfont`），
+设置 → **字体** 标签页点“重建”会立刻写入并热重载资源包。字体模式要选 **system** 才会用上它；
+若写入失败（例如「受控文件夹访问」拦住了 `resourcepacks` 目录），界面底部会显示 `write: ...`。
+槽位只接受可读的 `.ttf/.otf/.ttc`，没选的槽位直接跳过，未被字体覆盖的字回退到原版字体。
+
+**切歌后 HUD 上还是上一首的封面（第三轮）**
+封面现在会**持续观察**：切歌后 0.6 s 内不读（Windows 在这段时间里递出来的还是上一首的缩略图），
+随后 12 s 内每 250 ms 读一次，只要字节变化就立刻换上；之后退到每 8 s 一次。
+更关键的是**认脸**：这一轮之前只比较「和上一次读到的是不是同一张」，而换曲后哈希被清空，
+所以 Windows 递来的旧封面会被当成新封面直接收下、整首歌都不再刷新——这才是「切歌后封面不变」的真凶。
+现在记住上一首封面（显示中的那张）的哈希，观察窗口内读到同一张就当作还没发布、继续轮询；
+窗口结束后若仍然只有这张，才接受它（同专辑两首歌共用一张封面是正常情况）。
+另外「歌词比声音慢一秒」也在这一轮修掉了：见下面的**歌词总慢半拍**。
+
+**切歌后 HUD 上还是上一首的封面 / 暂停后歌词还在往前走**
+均已修复：换曲的同一拍就清空曲绘缓冲，新歌没封面时显示占位而不是旧图；无时间轴的播放器改为只在
+`playing` 时累计已播时长，暂停即冻结。
+
+**日志里出现 restricted method 警告 / "restricted FFM call refused"**
+JDK 24+ 对 FFM 下调默认只警告；设置页状态行与 `logs/latest.log` 会直接写明缺哪一项。
+**只把模组放进 `mods/` 时，jar 清单里的 `Enable-Native-Access` 不生效**——那一条只对
+`java -jar` 启动的进程有效，模组是走类路径加载的，必须在启动器的 JVM 参数里加：
+`--enable-native-access=ALL-UNNAMED`（老版本启动器写作 `-J--enable-native-access=ALL-UNNAMED`）；
+同时不要保留 `--illegal-native-access=deny`，否则连读都会失败。Windows 侧读 SMTC 用的是同一套
+FFM 下调，缺参数时同样只剩「没有会话」。
+
+**HUD 完全空白，左上角什么都没有**
+开发期修复过一个致命 bug（**1.0.0 不含该缺陷**）：采样线程每轮先 `close()`，把 FFM 的 `Arena` 关掉，
+之后每次 `allocate()` 都抛 "Already closed"，所有采样都变成空快照，HUD 又被 `hideWhenNoSession`
+隐藏 —— 表现就是什么都没显示。若仍然空白：把配置里的 `debug` 设为 `true`，然后看
+`logs/latest.log` 里的 `[smtcraft] SMTC reader ...` INFO/WARN 行（HUD 上的诊断行已移除）。
+
+**播放器被当成了浏览器，HUD 整个不显示**
+上一轮为了忽略「浏览器里放 YouTube」把判断写成了「名字里含浏览器关键字」，于是 Zen Music、
+ArcSoft Player、Whale Player、Opera Music 这些名字里带 `zen` / `arc` / `whale` / `opera` 的播放器
+全被当成浏览器——而 `ignoreBrowserSessions` 默认开启，HUD 就什么都不画了。现在先看音乐播放器
+白名单（VutronMusic、CloudMusic、酷狗、QQ 音乐、Spotify、foobar2000 等），命中就直接放行；
+否则要求名字**以**浏览器关键字开头、且后面只剩 `64`、`gx`、`beta`、`exe` 这类后缀才算浏览器。
+`OperaMusic` 不再被认成 Opera。
+
+**取色器的色板是一排空白按钮**
+取色器里的 16 个预设色块原来只建了按钮、没有任何填充，看上去就是一片灰。现在每格按预设色
+自己上色；手输十六进制时半途的非法值不会再让面板跳成纯白（解析失败就保持当前颜色），
+输入的 8 位颜色也会保留 alpha 通道而不是被强制不透明。
+
+**改完颜色后一换主题就被覆盖了 / 崩溃后游戏音乐一直是静音**
+手动挑过的颜色现在会被记住（按钮上显示 `✦` 标记），换主题只改仍是主题自己的颜色，
+只有「重置主题」才会全部覆盖。静音游戏音乐时被替换掉的原音量也写进了配置：即使游戏在静音
+期间崩溃，下次启动会把音量还原，不会永远停在 0。
+
+**26.1 启动时直接崩，日志里是 `GLFW error before init: [0x10001]The GLFW library is not initialized`**
+26.1 的 `GLX._initGlfw` 在真正调用 `glfwInit()` **之前**先查一遍 GLFW 的错误队列，非空就拒绝启动。
+把 `glfw.dll` 拉进进程的是 **`org.lwjgl.glfw.GLFW` 这个类的初始化**：`Class.forName("org.lwjgl.glfw.GLFW")`
+默认带 `initialise = true`，静态初始化里就会 `Library.load()`；反过来 `Class.forName(name, false, loader)`
+只加载不初始化，不碰原生库。`InputConstants` 与 `Window` 的静态初始化本身都不含 GLFW 引用
+（`javap` 实测，R30-3），入口那次真正踩到的是**把键翻译成显示名**：`KeyMapping.getTranslatedKeyMessage()`
+→ `InputConstants$Key.getDisplayName()` → `InputConstants$Type.lambda$static$0` → `GLFW.glfwGetKeyName`。
+现在的约定是：**入口阶段（`onInitializeClient`）不碰 GLFW，也不翻译键名**。为此有三处让步：
+`keys: offset=…` 那行（里面要打映射当前绑的键名）挪到第一个 tick 才打，并且 `test.sh` 有一条护栏盯着
+入口里不许出现 `Keys.key(…)` / `offsetName(…)` / `getTranslatedKeyMessage(…)` / `getDisplayName(…)`
+（这条护栏是**枚举**而不是判据：它认的是已经咬过人的那几个名字，换个新写法包一层它就看不见了）；
+`WheelWatch.mode()` 不再顺手解析后端，入口先写 `wheel=unresolved`，等窗口存在再问，取类一律用
+`Class.forName(…, false, …)`；
+滚轮监视本身也等 `Minecraft.getInstance()` / `getWindow()` / `handle() != 0` 全部成立（每 tick 重试，十秒上限）。
+正常启动时日志顺序是：先 `game api: … wheel=unresolved`，几 tick 之后才出现 `keys: offset=…` 与 `mouse wheel watch: glfw`。
+碰到这条时先彻底结束上一次崩溃留下的游戏进程再启动，残留窗口会占着同一份原生库。
+
+**启动时报 `ZipFile invalid LOC header (bad signature)` 或 `Failed to load class file for ...`**
+这不是发布包坏了，而是启动瞬间读到的 jar 与磁盘上的不是同一份：旧实例还在跑、或者杀软正在扫刚刚替换进来的
+jar 时被覆盖写入，读到的是半新半旧的文件。关掉所有游戏窗口，重新把 jar 拷进 `mods` 再启动即可；
+核对办法是比对文件大小与 md5（发布页附件即准）。
+
+### 7.z 设置页挤成一团，或者点了没反应／点右边跑到左边
+
+先看「显示」页那行 `跟随界面尺寸` 是不是被关掉了：关掉之后页面就退回游戏自己的缩放，界面尺寸 4 下
+逻辑屏只有 480×270，14 行设置只能压到 9 px 高，于是挤成一团。重新打开它，页面会按界面尺寸 2 排版。
+
+点不动的两种情形：一种是**整数倍错位**（点右下角，左上角那一行响应）——那是 1.0.1 早期构建的缺陷：
+`ScaledScreen` 里一段 javadoc 忘了收尾，把 `mouseClicked` / `mouseDragged` / `mouseReleased` /
+`mouseScrolled` 四个方法整段变成了注释，点击于是走游戏默认实现、用屏幕像素去比设计像素的控件矩形。
+已修复，并加了一条源码护栏盯着未闭合的块注释。另一种是页面滚到了别处：滚动后只有完整落在内容区内的行
+可点，跨在边界上的那行是整行隐藏的（不是裁剪，原因见 2.2）。
+
+### 7.y Linux 上 HUD 什么都不显示
+
+按 `logs/latest.log` 里 `smtcraft-mpris` 的告警逐条对：
+
+| 日志 | 含义 | 处理 |
+| --- | --- | --- |
+| `libdbus-1 is not installed` | 系统没有 D-Bus 客户端库 | 装 `dbus` / `libdbus-1-3` / `dbus-libs`，重启游戏 |
+| `no MPRIS player on the session bus` | 播放器没有对外提供 MPRIS | 播放器设置里打开 MPRIS（mpv 需要插件或 `playerctl` 同源支持；部分 Electron 播放器需手动启用） |
+| `no MPRIS player left after ignoring browser sessions` | 只有浏览器在播，被「忽略浏览器会话」挡掉 | 关掉该开关，或改用桌面播放器 |
+| `dbus: ...` 且持续出现 | 总线连接已失效 | 模组每 5 轮自动重连；仍不行就重启会话（注销再登录） |
+
+Windows 与 Linux 共用同一套 HUD、歌词与配置；只是采样来源不同，配置文件格式完全一致，
+可以在两个系统间直接复制 `config/smtcraft.json`（里面的字体路径与字体槽位除外）。
+### 7.x 装上模组后，游戏整体声音一卡一卡的
+
+三条已知来源，本版都已处理：
+
+1. **静音游戏音乐在反复开关。** 播放器在换曲、缓冲、拖动进度时会短暂报成「已暂停」，旧逻辑每次都把
+   MUSIC 声道在 0 和原值之间写一遍，听感就是声音忽有忽无。现在要求持续播放 400 ms 才静音、持续安静
+   1.5 s 才还原，并且同值不重复写。
+2. **采样线程被每 tick 唤醒。** 客户端每帧都把手里的配置对象交给桥接层，旧写法每次都唤醒采样线程，
+   150 ms 的节奏被压成 20 Hz，每轮三次 WinRT 异步调用的抖动会传到音频。现在只有采样真正读取的字段
+   变化才立刻采样，其余仍按设定间隔，且间隔有 50 ms 硬下限。
+3. **字体资源包重复重载。** `reloadResourcePacks()` 会连声音引擎一起重建，一次就是一秒半的声音空洞。
+   现在同一份字体设置最多尝试 2 次，内容没变时直接跳过重载，日志里只会在真的重载时出现
+   `reloading resource packs for the font selection`。
+
+如果还听得到卡顿，先做两步定位：一是把 **设置 → 显示 → 静音游戏音乐** 关掉，声音立刻恢复就说明是第 1 条
+（请把开关状态和播放器名字一起反馈）；二是翻 `latest.log`，搜 `slow client tick` 和
+`reloading resource packs`，前者会点名卡在配置、歌词、静音还是按键/字体上。
+
+### 7.w 打开「打开菜单时不显示」后，进世界就崩
+
+26.2 把屏幕栈从 `Minecraft.screen` 字段挪进了 `Minecraft.gui`，只留 `Gui.screen()` 取值。
+旧版直接读字段，在 26.3 / 26.4 上是 `NoSuchFieldError: … does not have member field
+'net.minecraft.client.gui.screens.Screen screen'`，崩在渲染线程。现在由 `util/Screens` 反射两条路
+（先 `gui.screen()`，退回字段），读不到就当作「没有菜单」——误隐藏比画在菜单后面更难看。
+日志里 `game api:` 那行不带 `screen=`，说明这个版本两条路都没有，请把版本号发来。
+
+### 7.v 曲绘圆角调了没反应
+
+圆角只在**黑胶唱片关闭**时才有角可倒（唱片是圆的）。另外半径是 0–12 的滑块，0 很难拖准，
+所以上一行还有一个 `曲绘圆角` 开关：开关关掉时半径滑块无效，封面保持直角。
+
+### 7.u 关于页一直显示「检查失败」，或者 Mod Menu 里没有网站与问题反馈
+
+更新检查按顺序试三条只读的路，第一条给出标签就停：
+
+1. `api.github.com/repos/123xzxc/SMTCraft/releases/latest` —— 一次读完 `tag_name` 和发布页地址；
+2. 站点的 `https://github.com/123xzxc/SMTCraft/releases.atom` —— 第一条 `<entry>` 的 id 以标签结尾，
+   链接就是发布页；这个地址**不按 IP 限额**；
+3. `https://github.com/123xzxc/SMTCraft/releases/latest` 的 302 跳转 —— `Location` 里就是标签。
+
+匿名调 REST 接口是**同一出口 IP 每小时 60 次**、全楼共用，所以 403 很常见，它会自动落到第 2 条，
+通常仍然能拿到标签（这也正是修复前「检查失败：http 403」的成因）。三条全失败时按钮只显示**一行
+翻译过的原因**——`GitHub 限流了当前网络` / `连不上 GitHub` / `证书或代理挡住了连接` /
+`没读到发布页`；每条路的原始诊断
+（`api: http 403 (rations used up); feed: http 404` 之类）只写进日志，供回报时引用。
+点一下按钮会强制重来一次。六小时内的答案直接复用、不再请求。本模组不代理、不改 hosts、不上传任何信息，
+答案只用来比大小。
+
+不想让它联网就把关于页的 `检查更新` 开关关掉（配置里的 `checkUpdates`）：入口、第一个 tick 与
+Mod Menu 都不再发起请求。这时答案只有一个——「更新检查已关闭」：关掉之后里面没有「第一次答案」，
+不能拿空答案当成「还在检查」（旧版就是这样，页面永远转圈），Mod Menu 那边的检查器也直接不注册，
+徽标整行不出现。按钮本身是个开关：点一下就是打开再检查，不用先去找滑条。
+当前版本读不到时（比如版本串为空）关于页说「版本号读不到，无法比较」，也不会假装「已是最新」。
+四类原因由抛出异常/状态码的那一处直接命名、装进答案（`Rate`/`Offline`/`Tls`/`Other`），
+所以改一句日志措辞不会挪动原因，证书挡住的连接也不会再被说成「没读到发布页」。
+
+版本比较按 Fabric 的写法：`-` 之前的部分先比（按点分段、数字按数值、缺段当 0），再比 `-` 之后的部分
+——**预发布比它的正式版低**（`1.0.2-beta < 1.0.2`），`+` 之后是构建元数据、不参与排序
+（`1.0.2+build5 == 1.0.2`）。同号重建换个 md5 不会提示「有更新」，因为标签没变。
+网站 / 源码 / 问题反馈 三个按钮来自 `fabric.mod.json` 的 `contact` 块，由 **Mod Menu** 渲染，
+所以不装 Mod Menu 时看不到；那就用设置界面「关于」页的三个同类按钮，或者直接开
+https://github.com/123xzxc/SMTCraft 。
+
+Mod Menu 上的「有更新可用」徽标还有两道门。第一道是**声明**：Mod Menu 只检查自己声明愿意被检查的
+模组，`fabric.mod.json` 的 `custom.modmenu.update_checker` 为 `true` 时它才会调用我们的
+`getUpdateChecker()`（取证方式：`FabricMod` 的构造函数先按 id 判掉 `minecraft`/`java`，
+再读 `getCustomValue("modmenu")` 的 `update_checker` 写进 `allowsUpdateChecks`），
+缺了这个键徽标永远不出现。第二道是**只问一次**：检查器对每个模组只调用一次、把答案存起来一直用，
+答「还在检查」就再没有第二次机会，所以我们在返回前等最多 2.5 秒（`UpdateCheck.awaitAnswer`）
+拿首个答案；那时网络还没回来，卡片显示的就是「检查失败」加原因，重开模组列表或重启游戏会重问一次。
+另外 Mod Menu 自己的更新检查开关必须打开（模组列表里的设置），徽标旁的「更新检测器处于实验阶段」
+是 Mod Menu 对这项功能的说明，与本模组无关。
+
+## 8. 从源码构建
+
+26.x 已去混淆，因此本工程**不使用 Loom**（Loom 找不到 26.x 的映射），而是普通 `java` 插件
++ 本地 jar 编译。编译目标是区间里最旧的 **26.1**（要兼容 26.1 就只能对着 26.1 编），
+新版差异由 2.1 的四条反射路径在运行期处理：
+
+```
+build.gradle          普通 java 插件，compileOnly 本地 jar
+gradle.properties     minecraft_version=26.1 / loader_version=0.20.1 / fabric_version=0.155.3+26.1
 toolchain/
-├── jdk25/bin/{java,javac,jar}
-├── mc-client-26.1.jar                # 官方去混淆客户端 jar（编译对齐区间最旧版本）
-├── fabric-loader-0.20.1.jar
-├── modmenu-21.0.0.jar                # 硬编译依赖（ModMenuIntegration 实现其 API）
-├── mc-libs/*.jar                     # 客户端 jar 的 libraries
-└── apijars/META-INF/jars/*.jar       # fabric-api 各模块
+  jdk25/              JDK 25（26.x 目标版本）
+  gradle9/            Gradle 9.x（8.x 太旧）
+  mc-client-26.1.jar  官方 26.1 客户端 jar（未混淆，编译目标）
+  mc-libs/            最新支持的版本（26.4）的客户端依赖库
+  mc-libs-26.1/       26.1 的客户端依赖库（编译目标那一版，脚本按 jar 名自动选）
+  fabric-loader-0.20.1.jar
+  apiJars/            解包后的 Fabric API 模块
 ```
-
-26.x 没有 Yarn / Intermediary 映射，所以**不经过 Loom、不 remap**：编译产物就是最终 jar。
-
-上面的文件都能从公开渠道拿到：`mc-client-26.1.jar` 就是启动器 `.minecraft/versions/26.1/` 下那个
-版本 jar（26.x 客户端未混淆），`fabric-loader` 与 `fabric-api` 模块来自 maven.fabricmc.net，
-Mod Menu 来自 Modrinth 或它的 maven，`mc-libs` 是客户端 jar 里 `libraries` 列出的库。
-
-编译目标故意取支持范围里**最旧**的 26.1：这样每处版本差异都是「旧版有、新版没了」，编译期就能
-暴露出来；要换目标时设 `SMTCRAFT_MC_CLIENT=<path to client.jar>`，两个脚本都认这个变量。
-
-### 方式 A：build.sh（最短路径）
 
 ```bash
-./build.sh /path/to/toolchain        # 省略参数则用 ../toolchain
+cd smtcraft
+JAVA_HOME=<toolchain>/jdk25 \
+GRADLE_USER_HOME=<toolchain>/gradle-home \
+<toolchain>/gradle9/bin/gradle.bat -PtoolchainDir=<toolchain> jar
 # 产物：build/libs/smtcraft-<mod_version>.jar
 ```
 
-脚本用 `javac --release 25` 编译 `src/main/java`，拷入 `src/main/resources`，把版本占位符替换成
-`gradle.properties` 里的 `mod_version`，再连同 `LICENSE` 与 `THIRD_PARTY_NOTICES.md` 一起打包。
-类文件默认暂存在工具链旁边的 `smtc-build/`（Windows 的「受控文件夹访问」会阻止 `java.exe` 在
-`Downloads` 下建目录）；需要换位置时设环境变量 `SMTCRAFT_STAGE`。
+`GRADLE_USER_HOME` 必须指向工作区内可写目录（默认 `~/.gradle` 在受限环境里会因
+`native-platform.dll` 加载失败而报错）。
 
-### 方式 B：Gradle
-
-仓库**不带 Gradle wrapper**（没有 `gradlew`，也没有 `gradle/wrapper/`），所以下面用本机已安装的
-`gradle`；只装了 JDK 的话直接用方式 A。
+Gradle 在个别受限环境里会卡在守护进程/文件监听上，这时可直接用等价的一步构建
+（javac + jar，参数与 `build.gradle` 完全一致）：
 
 ```bash
-gradle build -PtoolchainDir=/path/to/toolchain
-# 产物同样在 build/libs/
+cd smtcraft
+./build.sh <toolchain>     # 产物：build/libs/smtcraft-<version>+mc26.1-26.4.jar
+./test.sh <toolchain>      # 离线自测，见 8.1
 ```
 
-- `-PtoolchainDir` 默认是 `../toolchain`
-- 在 `Downloads` 这类受限目录里构建时，用 `-PbuildDirOverride=/path/outside/Downloads` 把
-  `build/` 与 `.gradle/` 移出去
-- `gradle selfTest` 直接调用 `test.sh`；`gradle check` 也挂在它上面
-- 方式 A 与方式 B 产出同一个 jar（都是纯 `javac` + `jar`，没有 Loom、不 remap）
+`build.sh` 默认用 `<toolchain>/mc-client-26.1.jar`；想换客户端 jar（例如验证某个快照）时设
+`SMTCRAFT_MC_CLIENT=<path to client.jar>`，`test.sh` 认同一个变量。依赖库跟着客户端 jar 走：
+26.1/26.2 的目标用 `mc-libs-26.1`，其余用 `mc-libs`（都可用 `SMTCRAFT_MC_LIBS` 覆盖）。两个集合
+必须分开——26.4 那套里有 `lwjgl-sdl`，拿它编 26.1 的树会让探针解析出一个 26.1 根本加载不了的
+滚轮后端，于是两个编译目标打印同一句话，断言等于没做。
 
-### 离线自测
+构建是**可复现**的：jar 里每个条目的时间戳固定为 `2026-01-01T00:00:00Z`、条目按名字排序后写入，
+所以同一棵树重复构建得到同一份字节，脚本最后打印的那行 `md5` 你自己也能复现出来——
+之前两个版本大小一致而 md5 不同（jar 记的是文件的修改时间），发布页上公布校验值等于自己给自己挖坑。
+
+`build.sh` 把 `.class` 先编到 toolchain 旁边的 `smtc-build/`（可用 `SMTCRAFT_STAGE` 覆盖；
+相对路径会先按当前目录展开成绝对路径——打包那一步在子 shell 里 `cd` 进了 class 目录，
+相对路径到那里就失效了），
+最后只把 jar 拷回 `build/libs`：Windows 的「受控文件夹访问」会拦住 `java.exe` 在
+`下载` 目录里创建子目录，直接在工程里 `-d` 会报
+`error while writing ...: could not create parent directories`。
+
+### 8.1 离线自测
+
+歌词解析、歌手匹配和 QRC/KRC 编解码都是纯 Java 类，不需要 Minecraft 就能跑：
 
 ```bash
-./test.sh /path/to/toolchain
+cd smtcraft
+./test.sh <toolchain>              # 编译到 <toolchain>/_selftest 并运行
+./test.sh <toolchain> --require-jar # 另外强制检查产物里的版本号（没先跑 build.sh 就失败）
 ```
 
-不需要网络、不需要起游戏，包含三部分：
+覆盖的用例：yrc 词级时间轴、yrc 解析失败回退行级 LRC、同一行多个时间戳时的词级平移、
+版权行识别、译文 400 ms 容差、KRC 逐字解析与译文对齐、QRC 无词行保留、QRC 3DES+zlib 往返解码、
+歌手/标题匹配的接受与拒绝、以及后台通道是否真的跑在自己的守护线程上。
+输出 `N checks, M failed`，有失败时退出码为 1。
 
-1. **整树编译**：先用客户端 jar + loader + 所有库把 `src/main/java` 整个编译一遍
-   —— 只跑自测（`-sourcepath` 按需编译）会漏掉没被引用的类。
-2. **源码护栏**：两条 awk 规则 + 自带的反向样本。日志调用里出现裸 `.toString()` 会失败
-   （必须用 `util/Errors.describe`）；同一个成员上方出现两个连续 javadoc 块会失败。
-   每条护栏都配一个「必须变红」的样本文件，护栏改坏了自检先炸。
-3. **行为断言**：`src/test/java/org/yinyun/smtcraft/SelfTest.java`，覆盖进度外推与停顿、歌词时钟不回退、
-   滚动目标、预算常量与关停计划顺序、配置热加载代数、libdbus 原型表、D-Bus 解码等。
+`test.sh` 还有八条**源码规则**护栏：日志里的异常一律走 `Errors.describe`，不允许
+连续两段 `/** */`（Java 会把前一段静默丢掉），可重绑的动作只能读映射——`Keys.key("名字")` 只放行
+修饰键与探针用的 `SMTCRAFT_*`，算出来的名字（`Keys.key(name, 296)`）和裸
+`Keys.isKeyDown(296)` 都算违规，以及入口方法 `onInitializeClient` 里不许出现
+`Keys.key(…)` / `offsetName(…)` / `getTranslatedKeyMessage(…)` / `getDisplayName(…)`
+（键值本身无害，但翻译键名会走到 `GLFW.glfwGetKeyName`，而 26.1 在 `glfwInit` 之前就把非空错误队列当致命错误；
+这条是白名单，不是判据）。第三、第四条判的是**调用的形状**而不是某一种拼法——第一版只认
+`Keys.key("KEY_F7"`，实测把同一件事写成 `Keys.isKeyDown(296)` 或 `Keys.key( "KEY_F7", 296)` 就全绿了。它们是 shell + awk，SelfTest 覆盖不到，
+所以扫全树之前先拿 43 个样本文件自检——折行写法
+`LOG.warn("… {}",\n what,\n failed.toString());`、行尾带注释的 `); // …`、藏在 `{ … }` 里的调用、
+`/** a */ void f()` 这种同行收尾、`Keys.key(`\n`"KEY_LCONTROL", 341);` 这种合法折行——每条违规都
+必须报在**确切的行号**上（折行的那种报在调用起始行），跟着一个必须静默的对照组；
+护栏自己不响，构建就先失败。放行名单也按文件算：`Keys.key("SMTCRAFT_NO_SUCH_FIELD", …)` 只在
+`ShimProbe.java` 里合法，前缀式的全局豁免会连生产代码一起放行，而 296 正是这条护栏要拦的数字。libdbus 的 17 个入口另有第三份声明放在
+`src/test/resources/libdbus-prototypes.txt`，自测会解析它与代码里的表逐条比对。
 
-`test.sh` 通过 `-Dsmtcraft.protos=src/test/resources/libdbus-prototypes.txt` 把 libdbus 的
-C 原型文件交给自测，用它作为符号表的第二来源（改一处不一致就会红）。
+盯**更新检查**的三条判的也是形状，不是拼法（AUDIT-47-5）：地址必须整段写出——出现 `"http"` 这种小块
+或明文 `http://` 就失败，`SCHEME + "://…"` 的拼装同样逃不掉；`awaitAnswer(` 必须落在
+`getUpdateChecker` 的**花括号体里面**（提到常量或构造函数里，徽标照样在首个答案之前回答，正是那条等待要防的事）；
+README 只认 `2.5` 这两个字符，不再把「2.5 秒」这种措辞焊进构建。而「所有端点都是 https」「四类原因各自成立」
+这种**语义**交给 `SelfTest` 去断言常量与 `classify` 本身——shell 只负责它在行的部分：形状。
 
-### 发布前检查
+还有一条盯的是**视口**：页面必须用 `ScaledScreen.vw()` / `vh()` 排版，直接读 `this.width`（或裸的
+`width`）就是忘了那个系数，界面尺寸自适应对它悄悄失效。规则先剥掉行尾注释、**行内块注释**
+（`int cx = 0; /* width of the band */` 不算读窗口，AUDIT-44-2）与字符串字面量，然后把
+`width(` / `height(` 这种**同名方法调用**改名避开（AUDIT-45-4：第一版按名字判，散文
+`LOG.info("do not read this.width here")` 与 `return width() - 24;` 都被报）。判据分两种形状：
+`this.width` 永远是字段，裸名只在**当前块作用域链上**查不到同名局部/参数时才算字段——
+`int width = vw() - 24;` 恰恰是这条规则最想推荐的写法，第一版却把推荐写法本身判成违规
+（AUDIT-35-1）。作用域是**块**不是**方法**，也不是**文件**：`if (k) { int width = 5; }` 里的声明
+不会豁免块外的裸 `width`（AUDIT-45-1），一个方法里的 `int width = …` 也不会让别的方法免检
+（AUDIT-44-1，第一版是文件级布尔）；判读是**流式**的，`int cx = (width - 40) / 2;` 写在
+`int width = 0;` 之前照样算读字段（AUDIT-45-2，同一声明语句自己的初始化器则算已声明）。
+声明要整段匹配「修饰符 + 类型 + 名字」，`java.util.List<String> width` 这种泛型声明算声明、
+`return height` 不算；`int width = 0, height = 0;` 逗号后面的第二个名字也一起登记（AUDIT-44-3）。
+受约束的文件按**继承**挑，不按名字挑：只有 `extends ScaledScreen` 的子类进名单，给基类改个名字
+不会把整条规则关掉，注释里提一句也换不到免检（AUDIT-35-2）。十个样本各钉一头：`Mixed.java`
+（同文件另一个方法里的裸 `width` 必须报，且只报这一行）、`Generic.java`、`Pair.java`、
+`Inline.java`、`Nested.java`（块内声明不许豁免块外）、`After.java`（声明在读取之后）、
+`StrW.java` / `StrB.java`（字符串里的散文必须静默）、`Call.java`（同名方法必须静默）、
+`Btn.java`（`widget("x", width - 8)` 必须报）。
+第五条是字面的块注释配对：`/**` 忘了收尾时 javac 一个字也不说——它会用**后面**那个 `*/` 合法闭合，
+中间的方法就这么消失（`ScaledScreen` 的四个鼠标处理器曾这样被整段吞掉，设置页变得只能看、点不动，
+而编译与自测全绿）。规则逐字符跟踪块注释状态：注释里再出现 `/*` 报一次，到文件末尾还没闭合就报开注那行，
+两个样本各钉一头（`Nest.java` 必红、`Closed.java` 必静默）。
 
-```bash
-./build.sh /path/to/toolchain && ./test.sh /path/to/toolchain
-```
+第六条盯的是**翻译键**：界面上每一行文字都来自 `smtcraft.opt.*`，写错一个键不会报错，游戏里只会把那串
+键名原样画在按钮上。规则把 `SettingsScreen.java` 里的 `"smtcraft.…"` 字面量全抓出来，逐个在
+`zh_cn.json` / `en_us.json` 里查（拼接出来的前缀像 `"smtcraft.source." + id` 会自动跳过），少一条就
+报 `smtcraft.opt.xxx: no entry in zh_cn.json`。
 
-两个都绿再发；改动涉及时间轴、滚动或缓存时，故意改坏一处实现、确认对应断言变红，再还原
-（自测的价值在于它会红，不在于它全绿）。
+同一组里还有一条盯**语言文件的形状**：那两个文件是 JSON，少一个逗号或多一个逗号，Minecraft 就整份跳过、
+一个字也不说，界面上所有标签一起退回成 `smtcraft.opt.xxx` 这种键名——上面那条键检查看不出来，因为文字
+一条都没少（AUDIT-45-6：一次追加键时漏了逗号，进游戏才发现）。规则逐行看键值行的逗号：除最后一行外都要有，
+最后一行不许有，文件还必须有内容；`lang-ok.json` 必须静默，`lang-nocomma.json` 与 `lang-trail.json` 各报一句。
 
-## 网络接口与密钥
+代码注释里的 `(AUDIT-…)` 是**发现编号**，只是给这处改动贴的标签，和报告正文的 `R<n>` 不是一套：报告按轮次
+编号，两套撞在一起时 `(R36-4)` 会被读成「第三十六轮的第四条」，所以代码侧统一加上 `AUDIT-` 前缀，一眼就能
+看出「这不是报告号」。想知道某个标签对应报告哪一条，看 CHANGELOG 里那一行改的是什么。
 
-**本模组不需要任何账号、Token 或 API Key，开箱即用。** 仓库里没有私钥、证书、代理凭据，
-也没有需要你申请才能运行的东西。三个歌词接口用的都是公开的客户端常量：
+五个兼容垫片（`Keys` / `Widgets` / `ScreenHooks` / `CoverTexture` / `WheelWatch`）另有一步
+**探针**：`src/test/java/…/ShimProbe.java` 用 `build.sh` 同一个客户端 jar 编译并运行，
+打印每个垫片解析到的路线，约定「编译目标上必须解析到」的那几项解析不到就以非零码退出。
+它管的是**静态的那半**：按键那条会调 `Keys.resolveForProbe()` 强制解析重载，再断言发出去的
+`KEY_LCONTROL` 与这条重载的编号体系一致（就 341 这对值而言：scancode 装得进一个字节，GLFW 的 341 装不进），
+解析过且失败时 `Keys.mode()` 答 `unavailable` 而不是 `…/deferred`，所以「一个重载都没有」是可失败的。
+坐标那条盯的是 `ScreenHooks.coordsMode()`：两轴路线相同时答 `coords(field)` 或 `coords(method)`，
+不一样时答 `coords(mouseX=…,mouseY=…)`（值为 `field` / `method` / `absent`）——三种形态都算通过，
+只认前两种会让第三种一出现就 FAIL（AUDIT-44-4）。并且 `GuiGraphicsExtractor.getDeclaredField("mouseX")`
+必须真的取得到——只认 public 方法的查找在两版上都答空，页面便整页画在 (0,0)（AUDIT-34-1）。
+运行期只剩一轴时，日志点名缺的那一轴并 WARN「the pointer is only half here」，而不是笼统说
+「这一版不带指针」（AUDIT-44-5）。
+滚轮那条同样调 `WheelWatch.resolveForProbe()` 强制解析，但光断言「解析到了 `glfw` 或 `sdl`」没有区分度：
+`test.sh` 按客户端 jar 算出这个目标**只能**是哪一个（26.1/26.2 → `glfw`，26.3 起 → `sdl`），用
+`-Dsmtcraft.wheel=` 传进探针，两者不符就以非零码退出。两种解析都只用 `Class.forName(…, false, …)`
+与反射，**不**初始化 `GLFW`——会加载 `glfw.dll` 的是 `installGlfw`，而它只在窗口存在之后才跑，
+入口那边看到的仍然必须是 `wheel=unresolved`。
+**滚一个格能不能到 HUD、按住 F7 滚轮能不能改偏移，探针不验**（那要窗口与事件循环），
+只在三个实例的 `logs/latest.log` 里看 `mouse wheel watch:` 那行（AUDIT-30-1）。
+SelfTest 刻意不依赖游戏 jar，因此这些垫片它一个都覆盖不到（AUDIT-28-9）。
 
-| 位置 | 内容 | 说明 |
-| --- | --- | --- |
-| `smtc/KugouClient.java` | 浏览器 UA、`ver=1&client=pc` 等查询参数 | 公开客户端参数；`accesskey` 由搜索接口在响应里返回，不是内置密钥 |
-| `smtc/QQMusicClient.java` | 浏览器 UA | 同上 |
-| `smtc/NetEaseClient.java` | Android UA | 同上 |
-| `smtc/Crypto.java` | QQ 音乐 3DES key、KRC XOR mask | 歌词格式的**固定公开常量**（移植自 Lyricify-Lyrics-Helper，Apache-2.0）；不含任何账号信息 |
+### 8.2 线程模型
 
-### 接口变了怎么自己修
+Minecraft 只有一个客户端线程，它同时跑 tick、渲染和输入。一次磁盘访问、一次网络等待或一次
+PNG 解码落在这条线程上，直接就是一帧掉到十几毫秒。模组把能搬的工作全部分成五条后台通道：
 
-三家接口都是非官方接口，参数或 UA 可能变。定位顺序：
+| 通道 | 线程名 | 干什么 | 谁提交 |
+| --- | --- | --- | --- |
+| SMTC 采样 | `smtcraft-smtc` | 通过 WinRT 读「正在播放」的曲名、歌手、进度、封面字节 | `SmtcBridge` 自己的循环（默认 150 ms 一轮） |
+| 歌词检索 | `smtcraft-lyric` / `smtcraft-lyric-probe` | 搜索、下载、解密（QRC/KRC）、解析、写缓存 | 歌词 worker，每个词源单独限时 |
+| 通用 I/O | `smtcraft-io`（2–4 线程） | 配置读写、字体资源包写入、缓存清理、延迟表落盘 | `Async.run(...)` |
+| 快照合并 | `smtcraft-latest` | 只保留最新一份配置快照再写盘，拖滑条不会排队几十次写文件 | `Async.latest(...)` |
+| 封面解码 | `smtcraft-cover` | PNG/JPEG 解码、降采样到 256 px、圆形裁切 | `ArtworkCache` |
 
-1. 打开 `debug: true`，日志会打出每次请求的 URL 与状态码
-2. 用浏览器 / curl 复现同一个 URL，确认是 403（UA 或签名）还是 200 但结构变了（解析）
-3. UA 与查询参数就在上表那几个文件里，改常量即可；返回结构变化改对应的解析方法，
-   并补一条 `SelfTest` 断言
+几条硬规则：
 
-### 如果将来需要密钥
+- 后台线程不碰任何 Minecraft 对象。结果一律通过 `Async.onClient(...)`（内部就是
+  `Minecraft.execute`）回到客户端线程，再改 HUD、配置字段或纹理。
+- 渲染线程只做 `DynamicTexture` 注册与上传；解码结果在队列里等下一帧取，取不到就画占位音符。
+- 配置 `save()` 只在调用线程做一次序列化快照，写盘在 I/O 通道；退出时先 `Async.awaitQuiet`
+  再 `saveNow()`，避免排队中的旧快照覆盖刚改的新值。
+- 逐曲延迟表的读取走 `ConcurrentHashMap`（HUD 每帧读，不加锁），写入由后台通道合并。
+- 客户端 tick 超过 80 ms 会打一条
+  `slow client tick: total=… ms (config=…, lyrics=…, mute=…, keys/fonts=…)`，哪一段慢一眼可见；
+  封面纹理上传超过 30 ms 也会单独打一条。
 
-目前没有任何接口要求密钥。若某家开始要求（或你要换成带签名的自建代理），**不要把密钥写进源码**：
-
-1. 到对应开放平台注册开发者应用（QQ 音乐开放平台、网易云音乐开放平台、酷狗开放平台），
-   创建应用后拿到 `app_id` / `app_secret`（或签名用的 `key`）
-2. 把密钥放进**本地配置**而不是仓库：在 `config/smtcraft.json` 里加自己的字段，或读环境变量
-   （例如 `SMTCRAFT_QQ_KEY`），代码里只在发送请求时读取
-3. 提交前确认 `git status` 里没有配置文件、没有 `.env`；本仓库的 `.gitignore` 已排除
-   `build/`、`.gradle/`、`run/` 与本机工具链
-4. 若密钥已经误提交：在平台侧重置密钥，而不是只删提交记录
-
-## 目录结构
+## 9. 目录结构
 
 ```
 src/main/java/org/yinyun/smtcraft/
-├── SmtcCraftClient.java        客户端入口：键位、生命周期、关停编排
-├── SmtcConfig.java             配置读写与热加载（Gson，原子替换）
-├── ModMenuIntegration.java     Mod Menu 入口
-├── audio/MusicMuter.java       播放时静音游戏音乐
-├── font/FontPack.java          本机字体 → 资源包 → 热重载
-├── gui/SettingsScreen.java     游戏内设置界面（四标签页 + 滚动）
-├── gui/ScreenHooks.java        跨版本：屏幕背景钩子与指针坐标
-├── gui/Widgets.java            跨版本：控件可见性
-├── media/                      MediaBridge 接口、按平台选择、空实现
-├── mpris/                      D-Bus 绑定、MPRIS2 桥、Wire 解码、符号原型表
-├── render/                     HUD、歌词渲染、封面缓存与跨版本纹理注册、滚动与时钟
-├── smtc/                       Windows SMTC 桥、歌词服务与三家接口客户端、格式解析
-└── util/                       Async、Budgets、ShutdownPlan、Watchdog、Errors、跨版本垫片（Keys/WheelWatch）
-src/main/resources/             fabric.mod.json、语言文件、图标
-src/test/java/                  SelfTest（离线行为断言）、ShimProbe（兼容垫片探针）
-src/test/resources/             libdbus 原型文件（自测第二来源）
-build.sh / test.sh              无 Gradle 的直接构建与离线自测
-build.gradle                   等价的可选构建路径 + selfTest 任务
+  SmtcCraftClient.java        客户端入口：配置、按键、HUD 注册、生命周期
+  SmtcConfig.java           Gson 配置 + mtime 热重载
+  audio/MusicMuter.java     播放时静音原版音乐，停止后还原用户音量
+  gui/SettingsScreen.java   游戏内设置界面（三标签页：开关/滑条/停靠/字体/颜色）
+  gui/ColorPickerScreen.java 取色器（色板 + RGB 滑条 + #RRGGBB 输入）
+  gui/FontPickerScreen.java 本机字体选择（枚举 %WINDIR%\Fonts 与用户字体目录，可搜索、翻页）
+  font/FontPack.java       按选中字体生成 resourcepacks/smtcraft_fonts 并热重载（smtcraft:systemfont）
+  media/MediaBridge.java    采样桥接口（Windows/Linux 共用的快照契约）
+  media/MediaBridges.java   按 os.name 选择 SMTC / MPRIS / 空实现
+  media/NullBridge.java     不支持的平台上的空实现
+  smtc/SmtcNative.java      SMTC 读取（FFM + WinRT，纯 Java）
+  smtc/WinRt.java           WinRT 基础设施：MTA、HSTRING、激活工厂、vtable 调用、IStream
+  smtc/SmtcBridge.java      Windows 采样线程（SMTC）+ volatile 快照 + 封面缓存
+  mpris/MprisBus.java       libdbus-1 的 FFM 绑定（会话总线、GetAll/Get、属性变体解析）
+  mpris/MprisBridge.java    Linux 采样线程：挑选播放器、Position/Identity、封面
+  mpris/MprisTrack.java     MPRIS 元数据 → 快照（xesam:* / mpris:length / artUrl）
+  mpris/MprisArt.java       artUrl 取值：file:// 与 http(s)://，4 MiB 上限
+  smtc/TrackInfo.java       不可变曲目快照（进度外推）
+  render/NowPlayingHud.java HUD 绘制（HudElement）
+  render/ArtworkCache.java  封面 → 贴图 LRU 缓存
+  render/Draw.java          颜色解析、省略号截断、时间格式化
+  render/Theme.java         六套配色预设（写入配置的颜色字段）
+  render/LyricsRenderer.java 歌词排版：逐字填充、居中、省略号、自定义字体
+  render/LyricClock.java    播放位置的单调化：小回退先保持、大回退当 seek
+  render/LyricScroll.java   滚动目标：把已唱边缘钉在 68% 处（渲染器与 HUD 共用）
+  smtc/LyricService.java    歌词服务线程：去重、缓存、搜索打分、拉取
+  smtc/NetEaseClient.java   网易云搜索/歌词 HTTP 客户端（JDK HttpClient）
+  smtc/LrcParser.java       LRC 解析（多时间戳、offset、制作信息过滤、译文合并）
+  smtc/LyricTrack.java      已解析歌词（按时间二分查找当前行、行内进度）
+  smtc/LyricLine.java       单行歌词（起止时间 + 原文 + 译文）
+  smtc/ProgressSmoother.java 进度防回弹
+build.sh                    不依赖 Gradle 的一步构建脚本
+src/main/resources/
+  fabric.mod.json
+  assets/smtcraft/icon.png
+  assets/smtcraft/lang/{en_us,zh_cn}.json
 ```
 
-## 已知限制
+## 10. 版本记录
 
-- 只做**读取**：不能控制播放、切歌、调音量（游戏音乐静音是唯一会改动系统状态的行为，且会还原）
-- 只在客户端生效（`environment: client`），服务器无需安装
-- 除 Windows 与 Linux 外的平台显示空 HUD
-- 三家歌词接口都不是官方接口，可能随时变化，见上一节的自修流程
-- 播放器发布周期长于 2.5 s 时，进度按最近一次真实步进外推，最多可能落后 2.4 s 再被追平
-- 开启跑马灯的歌词行在换行退场的那一帧，横向偏移偶有轻微跳变
-- 26.4 一侧的兼容层按快照 10 实测，快照之间接口仍在变动；换快照后先看日志的 `game api:` 一行
-- 仅当播放器把信息写进系统媒体会话时才可见（部分播放器默认关闭该功能）
-
-## 版本记录
+一行一版，每次发布只合并成**一条**摘要；逐轮的问题、修法与验证（含审计编号）在
+[CHANGELOG.md](CHANGELOG.md)，那里才是完整的那一份。
 
 | 版本 | 变更 |
 | --- | --- |
+| **1.0.2.20261123** | 修复按键设置后 `F7` + 滚轮仍能改延迟、同名不同版本（remix / live / 伴奏等）串用原版歌词、界面尺寸不是 2 时页面被压扁且点击错位这三处缺陷——页面改为按界面尺寸 2 的设计像素排版，任意分辨率与游戏缩放下都能正常显示与命中；主题页每个颜色项右侧的按钮直接显示该颜色本身（不再是十六进制文本）；新增曲绘圆角（关闭黑胶唱片时）、打开菜单时不显示、只显示歌词、边框不透明度、歌词翻译颜色与无翻译时的候选行颜色；关于页与 Mod Menu 加入更新检查（只读最新发布标签）；版本号改为四段日期式并修正比较语义，若干文案收短。 |
 | **1.0.1** | 加入 26.1 至 26.4-snapshot-10 版本支持：一个 jar 通吃 26.1 / 26.1.1 / 26.1.2 / 26.2 / 26.3 / 26.4（含快照 1–10），Fabric API 下限降到 0.155.3。相对 1.0.0 另修正了兼容层的按键编号读取（按名字读 `InputConstants` 的常量，不再写死一套编号）与滚轮监视的安装判定。 |
 | 1.0.0 | 首个公开发布版本：HUD 与同步歌词、卡拉 OK 逐字填充、游戏内设置界面、Windows SMTC 与 Linux MPRIS2。 |
 
-## 许可
+## 11. 许可
 
-- 本项目：MIT，见 [LICENSE](LICENSE)
-- 第三方：从 Lyricify-Lyrics-Helper 移植的歌词解密 / 解析片段为 Apache-2.0，
-  完整归属与修改说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；
-  构建出的 jar 内随附 `LICENSE_smtcraft` 与 `THIRD_PARTY_NOTICES_smtcraft.md`
+本项目自身代码：**MIT**，见 [LICENSE](LICENSE)。
+
+第三方组件按原协议随 jar 分发，署名与协议全文见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)。
+
+| 组件 | 协议 | 用途 |
+| --- | --- | --- |
+| [Lyricify-Lyrics-Helper](https://github.com/WXRIW/Lyricify-Lyrics-Helper) | Apache-2.0 | 酷狗/QQ/网易云歌词的请求参数、约定密钥与解密规则（改写为 Java） |
+
+jar 内随附 `LICENSE_smtcraft` 与 `THIRD_PARTY_NOTICES_smtcraft.md`，由构建脚本从仓库同名文件复制而来。
+
+按 Apache-2.0 §4(b)，上述改写属于修改版本：语言由 C# 改为 Java，去除 SharpZipLib / Newtonsoft.Json
+（分别以 `java.util.zip.Inflater` 与 Gson 替代），KRC 解压后的首字节改为条件截断。逐条对照与完整协议全文见
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)。

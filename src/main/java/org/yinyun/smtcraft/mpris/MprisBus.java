@@ -105,7 +105,7 @@ public final class MprisBus implements AutoCloseable {
                     // Descriptors and header prototypes live in DbusSymbols, one entry
                     // per symbol, and are cross-checked there on class initialisation —
                     // which runs on Windows too, unlike anything inside this branch
-                    // (R23-3).
+                    // (AUDIT-23-3).
                     getPrivate = down(linker, lookup, "dbus_bus_get_private");
                     exit = down(linker, lookup, "dbus_connection_set_exit_on_disconnect");
                     close = down(linker, lookup, "dbus_connection_close");
@@ -125,7 +125,7 @@ public final class MprisBus implements AutoCloseable {
                     iRecurse = down(linker, lookup, "dbus_message_iter_recurse");
                 } catch (IllegalArgumentException wrong) {
                     // the literal in down() is not in the table: a typo here, not a
-                    // distribution problem (R24-2)
+                    // distribution problem (AUDIT-24-2)
                     why = "MprisBus asks for a name DbusSymbols does not declare: "
                             + Errors.describe(wrong);
                 } catch (UnsatisfiedLinkError missing) {
@@ -174,7 +174,7 @@ public final class MprisBus implements AutoCloseable {
             } catch (IllegalCallerException denied) {
                 return false;
             }
-            // No catch-all on purpose (R24-3): anything else that escapes here is a
+            // No catch-all on purpose (AUDIT-24-3): anything else that escapes here is a
             // real failure, and calling it "native access granted" only moved the
             // report to the symbol loop, which then said "a symbol is missing".
         }
@@ -185,7 +185,7 @@ public final class MprisBus implements AutoCloseable {
          *
          * <p>Both halves are needed. The table is cross-checked when
          * {@link DbusSymbols} initialises, which happens with or without libdbus
-         * (R23-3); this comparison then catches a name whose descriptor and prototype
+         * (AUDIT-23-3); this comparison then catches a name whose descriptor and prototype
          * disagree at the point the linker actually builds the handle.</p>
          */
         private static MethodHandle down(Linker linker, SymbolLookup lib, String name) {
@@ -212,7 +212,7 @@ public final class MprisBus implements AutoCloseable {
     private final Arena arena;
     private final MemorySegment error;
     private MemorySegment connection = MemorySegment.NULL;
-    /** Last failure of the current round, whatever kind it was (R7-3). */
+    /** Last failure of the current round, whatever kind it was (AUDIT-73). */
     private String lastError = "";
     /**
      * First failure of the round that came from the connection, not the peer.
@@ -221,7 +221,7 @@ public final class MprisBus implements AutoCloseable {
      * reopened, a player answering {@code UnknownProperty} is healthy. Keeping
      * them apart matters because {@code exchange} used to clear {@link #lastError}
      * on every call, so the first failure in a round vanished as soon as a later
-     * call succeeded (R7-3).</p>
+     * call succeeded (AUDIT-73).</p>
      */
     private String lastFatal = "";
 
@@ -265,7 +265,7 @@ public final class MprisBus implements AutoCloseable {
      * Starts a new round: clears both error slots.
      *
      * <p>Called once per round by the sampler instead of on every call, so a
-     * failure early in the round survives the reads that follow it (R7-3).</p>
+     * failure early in the round survives the reads that follow it (AUDIT-73).</p>
      */
     public void clearError() {
         lastError = "";
@@ -289,7 +289,7 @@ public final class MprisBus implements AutoCloseable {
      * {@code GetAll} with an explicit reply timeout.
      *
      * <p>The sampler passes what is left of its probe budget, so one player that
-     * stopped answering cannot consume the whole round (R6-2).</p>
+     * stopped answering cannot consume the whole round (AUDIT-62).</p>
      */
     public Map<String, Object> getAll(String busName, String iface, int timeoutMs) {
         Map<String, Object> all = exchange(busName, "/org/mpris/MediaPlayer2",
@@ -303,7 +303,7 @@ public final class MprisBus implements AutoCloseable {
         return getProperty(busName, iface, property, TIMEOUT_MS);
     }
 
-    /** One property with an explicit reply timeout (R6-2). */
+    /** One property with an explicit reply timeout (AUDIT-62). */
     public Object getProperty(String busName, String iface, String property, int timeoutMs) {
         return exchange(busName, "/org/mpris/MediaPlayer2",
                 "org.freedesktop.DBus.Properties", "Get", List.of(iface, property), timeoutMs,

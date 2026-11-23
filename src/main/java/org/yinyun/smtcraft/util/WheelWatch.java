@@ -22,9 +22,9 @@ import org.slf4j.LoggerFactory;
  *   <li>SDL (26.3+): an event watch registered with {@code SDL_AddEventWatch} — the
  *       callback returns true, so the game still sees the wheel. The call reports success
  *       through its return value and can also refuse by returning false, so both outcomes
- *       are checked before the route is called live (R28-2). There is deliberately no
+ *       are checked before the route is called live (AUDIT-28-2). There is deliberately no
  *       fallback to {@code SDL_SetEventFilter}: SDL3 has one global filter, and taking it
- *       would displace whatever the game registered, permanently and invisibly (R28-4).</li>
+ *       would displace whatever the game registered, permanently and invisibly (AUDIT-28-4).</li>
  *   <li>GLFW (26.1/26.2): the scroll callback is replaced, and every notch in both axes is
  *       handed straight back to {@code MouseHandler.onScroll}, which is what the callback
  *       would have called anyway. The replacement is re-asserted from {@link #keepAlive()}
@@ -59,13 +59,29 @@ public final class WheelWatch {
     private static Object glfwCallback;
     private static long glfwWindow;
     private static int keepAliveCalls;
+    /** Re-registrations that threw after a live install; only the first one is logged (AUDIT-31-3). */
+    private static int keepAliveFailures;
 
     private WheelWatch() {
     }
 
-    /** {@code "sdl"}, {@code "glfw"} or {@code "unavailable"}. */
+    /**
+     * What {@link #resolve()} decided - {@code "sdl"}, {@code "glfw"}, {@code "unavailable"} - or
+     * {@code "unresolved"} while no attempt has been made this session.
+     *
+     * <p>Whether the watch is <em>installed</em> is not answered here: that is the return value of
+     * {@link #install(BooleanSupplier, Notch)}, and a route that resolves cleanly can still fail to
+     * install (no window yet, no event loop). {@code unresolved} means exactly one thing - nobody
+     * has asked yet - which is the state a bug report cannot otherwise tell apart from "this build
+     * has no backend". Resolving the route is safe at any point -
+     * {@link #resolve()} only calls {@code Class.forName(..., false, loader)}, which runs no
+     * static initialiser and loads no native library - so the probe does exactly that through
+     * {@link #resolveForProbe()}. What is <em>not</em> safe in the entrypoint is
+     * {@link #installGlfw}: it initialises {@code org.lwjgl.glfw.GLFW} on purpose, which loads
+     * {@code glfw.dll}, and 26.1 then reports {@code GLFW error before init: [0x10001]} because
+     * {@code GLX._initGlfw} inspects the error queue before its own {@code glfwInit} (AUDIT-31-1).
+     */
     public static synchronized String mode() {
-        if (!resolved) resolve();
         return mode;
     }
 
@@ -77,6 +93,20 @@ public final class WheelWatch {
     /** Why the last install attempt failed, for the "never installed" warning. */
     public static synchronized String reason() {
         return reason;
+    }
+
+    /**
+     * Resolves the backend choice and answers {@link #mode()}, without installing anything.
+     *
+     * <p>For {@code ShimProbe} only. "Which backend does this class path offer" was the one
+     * compatibility decision with no automated check at all: the probe used to forbid resolving
+     * it, on the belief that resolving loads GLFW - which {@link #resolve()} contradicts by using
+     * {@code Class.forName(..., false, loader)} (AUDIT-31-1). Installing is the part that needs a
+     * window and the native library; that half stays on the instances.</p>
+     */
+    public static synchronized String resolveForProbe() {
+        if (!resolved) resolve();
+        return mode;
     }
 
     /**
@@ -106,12 +136,25 @@ public final class WheelWatch {
         // once a second is plenty for a callback that only moves on window setup
         if (++keepAliveCalls % 20 != 0) return;
         try {
-            Class<?> glfw = Class.forName("org.lwjgl.glfw.GLFW");
-            Class<?> callbackType = Class.forName("org.lwjgl.glfw.GLFWScrollCallbackI");
+            // initialise = false does not keep the library unloaded: a reflective static call
+            // initialises the class anyway, and GLFW's initialiser is what loads glfw.dll. It is
+            // harmless here only because installGlfw already did that - which is exactly why this
+            // runs after a live install and never before one (AUDIT-31-2).
+            ClassLoader loader = WheelWatch.class.getClassLoader();
+            Class<?> glfw = Class.forName("org.lwjgl.glfw.GLFW", false, loader);
+            Class<?> callbackType = Class.forName("org.lwjgl.glfw.GLFWScrollCallbackI", false, loader);
             glfw.getMethod("glfwSetScrollCallback", long.class, callbackType)
                     .invoke(null, glfwWindow, glfwCallback);
         } catch (Throwable failed) {
             reason = "glfwSetScrollCallback: " + Errors.describe(failed);
+            // reason's only reader is the "never installed" warning, and that one cannot fire once
+            // installed is set: a callback that can no longer be put back would otherwise be
+            // silent everywhere - the player sees "F7 plus the wheel does nothing" and the log
+            // says nothing (AUDIT-31-3)
+            if (keepAliveFailures++ == 0) {
+                LOG.warn("the game replaced the scroll callback and it could not be put back ({})",
+                        Errors.describe(failed));
+            }
         }
     }
 
@@ -184,7 +227,7 @@ public final class WheelWatch {
             Object added = events.getMethod("SDL_AddEventWatch", filterType, long.class)
                     .invoke(null, filter, 0L);
             // SDL answers false when it refuses, without throwing: treating that as success
-            // left the route marked live with no event ever arriving (R28-2)
+            // left the route marked live with no event ever arriving (AUDIT-28-2)
             if (Boolean.FALSE.equals(added)) {
                 reason = "SDL_AddEventWatch returned false";
                 return false;
@@ -203,8 +246,11 @@ public final class WheelWatch {
 
     private static boolean installGlfw(BooleanSupplier armed, Notch notch) {
         try {
-            Class<?> glfw = Class.forName("org.lwjgl.glfw.GLFW");
-            Class<?> callbackType = Class.forName("org.lwjgl.glfw.GLFWScrollCallbackI");
+            // The window comes first, on purpose. Loading the GLFW class loads its native
+            // library, and doing that before the game calls glfwInit leaves 26.1 refusing to
+            // start: GLX._initGlfw checks the error queue *before* it initialises anything, so
+            // a stale "GLFW library is not initialized" from our early call becomes
+            // "GLFW error before init: [0x10001]" and the launcher never gets a window.
             Minecraft minecraft = Minecraft.getInstance();
             if (minecraft == null) {
                 reason = "Minecraft.getInstance() is null";
@@ -223,6 +269,8 @@ public final class WheelWatch {
                 reason = "the window handle is not ready yet";
                 return false;
             }
+            Class<?> glfw = Class.forName("org.lwjgl.glfw.GLFW");
+            Class<?> callbackType = Class.forName("org.lwjgl.glfw.GLFWScrollCallbackI");
 
             Method onScroll = minecraft.mouseHandler.getClass()
                     .getDeclaredMethod("onScroll", long.class, double.class, double.class);
@@ -231,8 +279,14 @@ public final class WheelWatch {
             InvocationHandler handler = (proxy, method, args) -> {
                 if ("invoke".equals(method.getName()) && args != null && args.length == 3) {
                     double dy = (Double) args[2];
-                    if (armed.getAsBoolean() && dy != 0.0) notch.turned(dy);
-                    // forward first: the game must see every notch, armed or not
+                    // Our notch is taken first, and it must never cost the game its scroll - the
+                    // same rule as the SDL side, where a broken notch is swallowed inside the event
+                    // pump. The forwarding below is then unconditional, armed or not (AUDIT-31-4).
+                    try {
+                        if (armed.getAsBoolean() && dy != 0.0) notch.turned(dy);
+                    } catch (Throwable ignored) {
+                        // see above: our arithmetic is the expendable half
+                    }
                     try {
                         onScroll.invoke(minecraft.mouseHandler, args[0], args[1], args[2]);
                     } catch (Throwable failed) {
