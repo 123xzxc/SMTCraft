@@ -1,0 +1,29 @@
+# build output
+build/
+out/
+.gradle/
+
+# local toolchain (client jar, libraries, JDK) - never part of the repo
+toolchain/
+smtc-build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# runtime instance
+run/
+config/
+logs/
+
+# 临时调试脚本、检查报告（构建期用的下载/代理探针，45 MB 量级，不入库）
+.tmpdl/
+临时/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,20 @@
+[
+{
+  "modid": "smtcraft",
+  "name": "SMTCraft — SMTC Now Playing",
+  "description": "把系统当前播放的曲目与同步歌词画进 HUD。播放信息来自 Windows SMTC（PowerShell 调 WinRT）或 Linux MPRIS2（playerctl / gdbus），歌词来自酷狗 / 网易云 / QQ 音乐公开接口。仅客户端。",
+  "version": "${version}",
+  "mcversion": "${mcversion}",
+  "url": "https://github.com/123xzxc/SMTCraft",
+  "updateUrl": "",
+  "authorList": ["123xzxc"],
+  "credits": "歌词接口与解析参考 Lyricify-Lyrics-Helper",
+  "logoFile": "assets/smtcraft/icon.png",
+  "screenshots": [],
+  "parent": "",
+  "useDependencyInformation": "true",
+  "requiredMods": [],
+  "dependencies": [],
+  "dependants": []
+}
+]

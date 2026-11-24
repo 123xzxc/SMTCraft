@@ -1,0 +1,216 @@
+// Minecraft 1.7.10 + Forge 构建脚本（ForgeGradle 1.2）。
+//
+// 与 26.x 的 Fabric 版最大的差别：那版没有 Loom、用 javac 直编；这边必须用
+// ForgeGradle，因为它负责下载 MCP 映射并把 Minecraft 反混淆成 net.minecraft.*
+// 的名字，源码里用的就是这套名字（net.minecraft.client.Minecraft 等）。
+//
+// 前置：JDK 8。ForgeGradle 1.2 跑在 Gradle 2.0-2.14 上，那些 Gradle 版本不认识
+// 更高版本的 JDK，用 17/21 会直接在建脚本阶段报错。
+buildscript {
+    repositories {
+        mavenCentral()
+        maven { name = "forge"; url = "https://maven.minecraftforge.net/" }
+        maven { name = "sonatype"; url = "https://oss.sonatype.org/content/repositories/snapshots/" }
+    }
+    dependencies {
+        classpath "net.minecraftforge.gradle:ForgeGradle:1.2-SNAPSHOT"
+    }
+}
+
+apply plugin: "forge"
+
+// ForgeGradle 1.2 要解析 net.minecraftforge:forge:<forge_version> 这个 maven 模块，因此需要
+// .pom 元数据。2026 年公共仓库里这个模块的 pom 与「无 classifier」jar 全是 404，只剩
+// -userdev / -universal 两个 jar 还能下（官方站、files.minecraftforge.net、CleanroomMC 镜像都一样）。
+// 所以在 .gradle/forge-repo 里拼一个最小仓库：手写 pom + 首次构建时下载的两个 jar。
+// 只下一次，之后直接复用；.gradle/ 与 build/ 都不入库，也不需要手动准备任何二进制。
+def forgeModulePath = "net/minecraftforge/forge/" + project.forge_version
+def forgeStagedRoot = new File(project.rootDir, ".gradle/forge-repo")
+def forgeRepo = new File(forgeStagedRoot, forgeModulePath)
+forgeRepo.mkdirs()
+
+def forgePom = new File(forgeRepo, "forge-" + project.forge_version + ".pom")
+if (!forgePom.isFile()) {
+    forgePom.setText("""<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>net.minecraftforge</groupId>
+  <artifactId>forge</artifactId>
+  <version>""" + project.forge_version + """</version>
+  <packaging>jar</packaging>
+</project>
+""", "UTF-8")
+}
+
+["userdev", "universal"].each { classifier ->
+    def name = "forge-" + project.forge_version + "-" + classifier + ".jar"
+    def target = new File(forgeRepo, name)
+    if (target.isFile() && target.length() > 1024L * 1024L) {
+        return
+    }
+    def seeds = [
+        new File(project.rootDir, "toolchain/m2/" + forgeModulePath + "/" + name),
+    ]
+    def seeded = seeds.findResult { f -> (f.isFile() && f.length() > 1024L * 1024L) ? f : null }
+    if (seeded != null) {
+        target.bytes = seeded.bytes
+        logger.lifecycle("smtcraft: seeded " + name + " from toolchain/m2")
+        return
+    }
+    def bases = [
+        "https://maven.minecraftforge.net/",
+        "https://files.minecraftforge.net/maven/",
+        "https://repo.cleanroommc.com/releases/",
+    ]
+    def got = false
+    for (String base : bases) {
+        if (got) {
+            break
+        }
+        try {
+            def conn = new URL(base + forgeModulePath + "/" + name).openConnection()
+            conn.setRequestProperty("User-Agent", "Gradle/" + gradle.gradleVersion)
+            conn.connectTimeout = 20000
+            conn.readTimeout = 180000
+            if (conn.responseCode != 200) {
+                logger.lifecycle("smtcraft: " + base + " has no " + name + " (" + conn.responseCode + ")")
+                conn.disconnect()
+                continue
+            }
+            def part = new File(forgeRepo, name + ".part")
+            part.withOutputStream { out -> out << conn.inputStream }
+            conn.disconnect()
+            if (part.length() > 1024L * 1024L) {
+                part.renameTo(target)
+                got = true
+                logger.lifecycle("smtcraft: downloaded " + name + " from " + base)
+            } else {
+                part.delete()
+            }
+        } catch (Exception e) {
+            logger.lifecycle("smtcraft: " + base + " failed for " + name + ": " + e.message)
+        }
+    }
+    if (!got) {
+        throw new GradleException("smtcraft: cannot obtain " + name + ". Put it into toolchain/m2/" + forgeModulePath + " and retry.")
+    }
+}
+
+repositories {
+    maven { name = "forgeStaged"; url = forgeStagedRoot }
+    maven { name = "forgeMaven"; url = "https://maven.minecraftforge.net/" }
+    maven { name = "forgeFiles"; url = "https://files.minecraftforge.net/maven" }
+    mavenCentral()
+}
+
+// ForgeGradle 1.2 把 Minecraft 的下载地址硬编码成 s3.amazonaws.com/Minecraft.Download（2019 年下线，
+// 插件里没有可配置项），所以这里在配置阶段自己把三个文件放进它的缓存位置，再禁用那三个任务：
+// 版本 json、客户端 jar、服务端 jar。地址取自仍在服务的 launchermeta / launcher.mojang.com，
+// 取到一次就留在缓存里（.gradle/ 与 Gradle 用户目录都不入库）。
+def mcCacheDir = new File(gradle.gradleUserHomeDir, "caches/minecraft")
+def mcStageDir = new File(project.rootDir, ".gradle/mc-stage")
+
+def fetchTo = { File target, String url ->
+    if (target.isFile() && target.length() > 1024L) {
+        return
+    }
+    target.parentFile.mkdirs()
+    def part = new File(target.parentFile, target.name + ".part")
+    def conn = new URL(url).openConnection()
+    boolean http = conn instanceof java.net.HttpURLConnection
+    if (http) {
+        conn.setRequestProperty("User-Agent", "Gradle/" + gradle.gradleVersion)
+        conn.connectTimeout = 20000
+        conn.readTimeout = 300000
+        if (conn.responseCode != 200) {
+            def code = conn.responseCode
+            conn.disconnect()
+            throw new GradleException("smtcraft: cannot download " + url + " (" + code + ")")
+        }
+    }
+    try {
+        part.withOutputStream { out -> out << conn.inputStream }
+    } finally {
+        if (http) {
+            conn.disconnect()
+        }
+    }
+    target.delete()
+    if (!part.renameTo(target)) {
+        throw new GradleException("smtcraft: cannot write " + target)
+    }
+}
+
+def mcVersion = project.minecraft_version
+def mcVersionJson = new File(mcStageDir, mcVersion + ".json")
+if (!mcVersionJson.isFile() || mcVersionJson.length() < 1024L) {
+    def manifest = new groovy.json.JsonSlurper().parse(new URL("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"))
+    def entry = manifest.versions.find { it.id == mcVersion }
+    if (entry == null) {
+        throw new GradleException("smtcraft: launcher meta has no version " + mcVersion)
+    }
+    fetchTo(mcVersionJson, entry.url)
+}
+def mcMeta = new groovy.json.JsonSlurper().parse(mcVersionJson)
+fetchTo(new File(mcCacheDir, "versionJsons/" + mcVersion + ".json"), mcVersionJson.toURI().toURL().toString())
+fetchTo(new File(mcCacheDir, "net/minecraft/minecraft/" + mcVersion + "/minecraft-" + mcVersion + ".jar"), mcMeta.downloads.client.url)
+fetchTo(new File(mcCacheDir, "net/minecraft/minecraft_server/" + mcVersion + "/minecraft_server-" + mcVersion + ".jar"), mcMeta.downloads.server.url)
+tasks.matching { it.name in ["downloadClient", "downloadServer", "getVersionJson"] }.all { it.enabled = false }
+
+// Gson 是 Minecraft 1.7.10 自带的库（2.2.4），ForgeGradle 会把它透传到编译类路径。
+// 这里显式写一遍：换 Gradle / 换 minecraft{} 配置时依赖关系不会凭空消失，版本也
+// 与运行期自带的那个一致，不会出现两个 Gson 打架。
+dependencies {
+    compile "com.google.code.gson:gson:2.2.4"
+}
+
+version = project.mod_version
+group = project.maven_group
+archivesBaseName = project.archives_base_name
+
+minecraft {
+    version = project.forge_version
+    runDir = "run"
+    // 版本号只写在 gradle.properties，源码里的 @VERSION@ 在构建时替换，README 与
+    // mcmod.info 也跟着它走，避免三处各写一遍。
+    replaceIn "org/yinyun/smtcraft/SmtcCraftClient.java"
+    replace "@VERSION@", project.mod_version
+}
+
+sourceCompatibility = "1.8"
+targetCompatibility = "1.8"
+
+tasks.withType(JavaCompile) {
+    options.encoding = "UTF-8"
+    // 1.7.10 的玩家群里有大量 Java 8 运行时；-source/-target 1.8 之外还要挡住
+    // 之后才出现的 API（例如 java.lang.foreign），编译期就报错而不是运行期炸。
+    options.compilerArgs << "-Xlint:-options"
+}
+
+processResources {
+    // mcmod.info 是 UTF-8 写的（名称、描述里有中文）。Gradle 的 expand 默认用平台
+    // 默认字符集（Windows 上是 GBK），会把中文读成乱码再按 GBK 写回，进游戏后 mod
+    // 列表里全是问号。这里显式钉住 UTF-8。
+    filteringCharset = "UTF-8"
+    inputs.property "version", project.mod_version
+    inputs.property "mcversion", project.minecraft_version
+    from(sourceSets.main.resources.srcDirs) {
+        include "mcmod.info"
+        expand "version": project.mod_version, "mcversion": project.minecraft_version
+    }
+    from(sourceSets.main.resources.srcDirs) {
+        exclude "mcmod.info"
+    }
+}
+
+// Windows「受控文件夹访问」不允许 java.exe 在 Downloads 下建目录，需要换位置时
+// 传 -PbuildDirOverride=<path>（与 26.x 版同样的开关，习惯保持一致）。
+if (project.hasProperty("buildDirOverride")) {
+    buildDir = file(project.property("buildDirOverride"))
+}
+
+jar {
+    manifest {
+        attributes "FMLCorePluginContainsFMLMod": "false"
+    }
+}
