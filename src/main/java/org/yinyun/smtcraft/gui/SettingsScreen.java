@@ -9,6 +9,7 @@ import org.yinyun.smtcraft.smtc.LyricProvider;
 import org.yinyun.smtcraft.smtc.LyricService;
 import org.yinyun.smtcraft.media.MediaBridge;
 import org.yinyun.smtcraft.util.Errors;
+import org.yinyun.smtcraft.util.HudLayout;
 import org.yinyun.smtcraft.util.UiScale;
 import org.yinyun.smtcraft.util.UpdateCheck;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -285,7 +286,7 @@ public final class SettingsScreen extends ScaledScreen {
     }
 
     private void layoutDisplayTab(int x0, int x1, int colW, int gap) {
-        int step = step(19, 26);
+        int step = step(23, 26);
         int rowH = rowH(step);
         int y = contentTop();
 
@@ -328,6 +329,18 @@ public final class SettingsScreen extends ScaledScreen {
         addToggle("smtcraft.opt.lyrics_only", () -> cfg.lyricsOnly,
                 v -> cfg.lyricsOnly = v, x0, y, x1 + colW - x0, rowH);
         y += step;
+        // five full rows in the middle of a switch: both are about the panel as a whole,
+        // and a half width switch next to a slider reads as a slider setting
+        addToggle("smtcraft.opt.hud_side", () -> HudLayout.side(cfg.hudLayout),
+                v -> cfg.hudLayout = HudLayout.name(v), x0, y, x1 + colW - x0, rowH);
+        y += step;
+        addToggle("smtcraft.opt.track_first", () -> cfg.trackFirst,
+                v -> cfg.trackFirst = v, x0, y, x1 + colW - x0, rowH);
+        y += step;
+        addToggle("smtcraft.opt.vertical", () -> HudLayout.vertical(cfg.hudLayout),
+                v -> cfg.hudLayout = v ? HudLayout.VERTICAL : HudLayout.STACK, x0, y,
+                x1 + colW - x0, rowH);
+        y += step;
         // rebuildWidgets() so the new multiplier reaches the layout immediately: with the
         // switch on, a page built at the old factor keeps the old geometry until the
         // player leaves and comes back, which reads as a dead switch (AUDIT-36-2)
@@ -357,6 +370,18 @@ public final class SettingsScreen extends ScaledScreen {
                 cfg.cornerRadius,
                 v -> cfg.cornerRadius = (int) Math.round(v),
                 v -> Component.translatable("smtcraft.opt.radius", (int) Math.round(v)));
+        y += step;
+        // its own row: it shared the left cell with the horizontal offset for one build, and
+        // the offset slider disappeared under it (m12147)
+        // 0 is "auto"; everything above it snaps into 96..480 so the label never prints a
+        // height the panel cannot use (R49-4)
+        addSlider(x0, y, x1 + colW - x0, rowH, 0d, SmtcConfig.MAX_VERTICAL_H, cfg.verticalPanelHeight,
+                v -> cfg.verticalPanelHeight = SmtcConfig.verticalHeightOf(v),
+                v -> {
+                    int snap = SmtcConfig.verticalHeightOf(v);
+                    return Component.translatable("smtcraft.opt.vertical_height",
+                            snap == 0 ? "auto" : String.valueOf(snap));
+                });
         y += step;
         addSlider(x0, y, colW, rowH, 0d, 400d, cfg.offsetX,
                 v -> cfg.offsetX = (int) Math.round(v),

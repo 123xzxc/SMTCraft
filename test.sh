@@ -161,6 +161,172 @@ if ! grep -qF "2.5" "$WORK/README.md"; then
     echo "FAIL README no longer states the 2.5 s wait the code relies on" >&2
     exit 1
 fi
+# The upright branch of a vertical run draws CJK one glyph at a time, and it used to draw them at
+# 1.0 and only apply the karaoke swell: the lyric size slider moved the column spacing and left
+# every glyph alone (m12323). Rendering cannot be asserted offline, so the shape is.
+LYR="$WORK/src/main/java/org/yinyun/smtcraft/render/LyricsRenderer.java"
+SHEET="$WORK/src/main/java/org/yinyun/smtcraft/gui/SettingsScreen.java"
+UPRIGHT_OK="$(awk '
+    /if \(upright\(cp\)\)/ { inside = 1; depth = 0 }
+    inside {
+        opens = gsub(/\{/, "{")
+        closes = gsub(/\}/, "}")
+        depth += opens - closes
+        if (index($0, "scale(s)") > 0) found = 1
+        if (depth <= 0 && opens + closes > 0) inside = 0
+    }
+    END { print (found ? "yes" : "no") }
+' "$LYR" || true)"
+if [ "$UPRIGHT_OK" != "yes" ]; then
+    echo "FAIL the upright glyph branch drops the lyric size (a CJK column ignores the slider)" >&2
+    exit 1
+fi
+# The track columns of a vertical panel walk the way the stacked panel marquees a title: down and
+# back, because a title parked at its tail is unreadable from the front (m12414). The lyrics keep
+# the one-way path, and both walks answer to their marquee switch (R49-1). Rendering cannot be
+# asserted offline, so the wiring is - but judged inside the method that wires it: "the string is
+# somewhere in the file" was satisfied by a shadow constant and by a dead call (R49-8).
+HUD="$WORK/src/main/java/org/yinyun/smtcraft/render/NowPlayingHud.java"
+LAYOUT="$WORK/src/main/java/org/yinyun/smtcraft/util/HudLayout.java"
+LEX="$WORK/src/test/resources/guard-lex.awk"
+# One lexer, three judges (R52-2, R52-5): comments are removed with the block state carried
+# across lines and string literals are blanked, so every judge below reads code and only code.
+clean() { awk -f "$LEX" "$1"; }
+body_has() {
+    awk -v sig="$2" -v call="$3" '
+        FNR == 1 { inside = 0; depth = 0 }
+        index($0, sig) > 0 { inside = 1; depth = 0 }
+        inside {
+            opens = gsub(/\{/, "{")
+            closes = gsub(/\}/, "}")
+            depth += opens - closes
+            if (index($0, call) > 0) found = 1
+            if (depth <= 0 && opens + closes > 0) inside = 0
+        }
+        END { print (found ? "yes" : "no") }
+    ' <(clean "$1") || true
+}
+if [ "$(body_has "$HUD" "private void renderVertical(" "HudLayout.verticalScroll(")" != "yes" ]; then
+    echo "FAIL the vertical lyric column no longer walks one way (renderVertical)" >&2
+    exit 1
+fi
+if [ "$(body_has "$HUD" "private void renderVertical(" "cfg.marqueeLyrics")" != "yes" ]; then
+    echo "FAIL the vertical lyric column ignores the lyric marquee switch (R49-1)" >&2
+    exit 1
+fi
+if [ "$(body_has "$HUD" "private static int verticalColumn(" "HudLayout.verticalScrollCycle(")" != "yes" ]; then
+    echo "FAIL the track columns no longer walk back (a long title parks at its tail)" >&2
+    exit 1
+fi
+if [ "$(body_has "$HUD" "private void drawVerticalTrack(" "cfg.marqueeTrack")" != "yes" ]; then
+    echo "FAIL the track columns ignore the track marquee switch (R49-1)" >&2
+    exit 1
+fi
+if [ "$(body_has "$LYR" "public static float marqueeOffset(" "HudLayout.MARQUEE_SPEED")" != "yes" ] \
+   || [ "$(body_has "$LYR" "public static float lyricOffset(" "HudLayout.MARQUEE_SPEED")" != "yes" ]; then
+    echo "FAIL the marquee keeps its own pace instead of HudLayout's (m12491)" >&2
+    exit 1
+fi
+if ! body_has "$LYR" "public static float lyricOffset(" "HudLayout.scrollOver(" | grep -q yes; then
+    echo "FAIL the lyric marquee no longer takes the one-way path" >&2
+    exit 1
+fi
+# A call inside the body still is not a switch that does anything: deleting the `walk ?` left
+# every assertion above green while the option was read and then ignored (R50-1). The call has
+# to be the thing the switch guards, so this one is judged on the line itself.
+# ... and judged on the statement, not the line: "walk ?" on the line passed a branch written the
+# wrong way round, and a legal wrap onto the next line was reported as missing it (R51-3).
+walk_scan() {
+    # Statements, not lines (R51-3), and now both shapes of a real switch (R52-1): the
+    # switch may guard the call as a ternary (walk ? call : 0) or as the condition of an
+    # if (if (walk) { … call … }). The if form was reported as "the option is read but
+    # not used", which sent the reader to the switch while the judge was what only knew
+    # one spelling. An inverted if (!walk) is still reported.
+    awk -v file="$1" '
+        {
+            text = $0
+            sub(/^[ \t]+/, "", text)
+            if (text == "") next
+            # reported at the line the call sits on, wrapped or not (R51-3)
+            if (at == 0 && text ~ /HudLayout\.verticalScroll/) { at = FNR; frag = text }
+            stmt = stmt " " text
+        }
+        /;/ {
+            if (stmt ~ /HudLayout\.verticalScroll(Cycle)?\(/) {
+                if (stmt !~ /walk[ \t]*\?[ \t]*HudLayout\.verticalScroll/ \
+                    && stmt !~ /if[ \t]*\([ \t]*walk[ \t]*\)[^;]*HudLayout\.verticalScroll/)
+                    print "  " file ":" at ": " frag
+            }
+            stmt = ""
+            at = 0
+            frag = ""
+        }
+    ' <(clean "$1")
+}
+WALK_OK="$(walk_scan "$HUD" || true)"
+if [ -n "$WALK_OK" ]; then
+    echo "FAIL a scroll call ignores its switch (the option is read but not used, R50-1):" >&2
+    echo "$WALK_OK" >&2
+    exit 1
+fi
+# The marquee clock is added to sixty times a second for as long as the game stays open. As a
+# float it lost its step at 3.03 days (running 1.875x) and stopped at 6.07 days (R50-4). Pinning
+# the two lines that did the fix proved nothing once they were replaced by a cast: the clock has
+# to travel as a double all the way into the scrolling functions, and no constant may cut it
+# (R51-2). SelfTest measures the cut itself ("a title never jumps back on the hour").
+if ! grep -qF "private double clock;" "$HUD"; then
+    echo "FAIL the marquee clock is not a double again (it loses its step after three days, R50-4)" >&2
+    exit 1
+fi
+CLOCK_BAD="$(awk '
+    # Three shapes of the same cut, over every file that hands the clock along (R52-3).
+    # "(float) clock" was caught; "(float) (clock)" was not, and one extra pair of
+    # parentheses brought the R50-4 bug back. So: the clock cast to float matches with or
+    # without parentheses, any cast on the statement that calls a scrolling function counts,
+    # and the phase constant that R51-1 removed may come back from either direction. The
+    # files are the three that pass the clock along, not just the HUD.
+    FNR == 1 { base = FILENAME; sub(/.*\//, "", base) }
+    /\(float\)[ \t]*\(*[ \t]*clock[ \t]*\)*[ \t]*[,);]/ {
+        line = $0; gsub(/^[ \t]+/, "", line)
+        print "  " base ":" FNR ": " line
+        next
+    }
+    /HudLayout\.(verticalScroll|verticalScrollCycle|scrollCycle|scrollOver)\(/ && /\(float\)/ {
+        line = $0; gsub(/^[ \t]+/, "", line)
+        print "  " base ":" FNR ": " line
+        next
+    }
+    /clockPhase[ \t]*\(|CLOCK_WRAP/ {
+        line = $0; gsub(/^[ \t]+/, "", line)
+        print "  " base ":" FNR ": " line
+    }
+' "$HUD" "$LYR" "$LAYOUT" || true)"
+if [ -n "$CLOCK_BAD" ]; then
+    echo "FAIL the clock is cut before it reaches the scrolling functions (R51-2):" >&2
+    echo "$CLOCK_BAD" >&2
+    exit 1
+fi
+for sig in "public static float scrollCycle(float overflow, double clock" "public static int verticalScrollCycle(double clock"; do
+    if ! grep -qF "$sig" "$LAYOUT"; then
+        echo "FAIL the cycling walk takes its clock as a float again ($sig, R51-2)" >&2
+        exit 1
+    fi
+done
+# Same shape one file over: the height slider must hand its value to the function that both
+# snaps it and names it, or the label and the panel drift apart again (R50-1).
+SLIDER_BAD="$(awk '
+    /cfg\.verticalPanelHeight[ \t]*=/ && !/SmtcConfig\.verticalHeightOf\(/ {
+        line = $0
+        gsub(/^[ \t]+/, "", line)
+        print "  " FNR ": " line
+        bad = 1
+    }
+' "$SHEET" || true)"
+if [ -n "$SLIDER_BAD" ]; then
+    echo "FAIL the height slider writes the panel height without snapping it (R50-1):" >&2
+    echo "$SLIDER_BAD" >&2
+    exit 1
+fi
 if [ -f "$BUILT_JAR" ]; then
     JARCHECK="$WORK/build/jarcheck"
     rm -rf "$JARCHECK"
@@ -318,15 +484,17 @@ rawkey() {
 # the guard reject the style it recommends. So the two shapes are judged separately: "this.width"
 # is always the field; a bare name is only the field when the file never declares one (AUDIT-35-1).
 viewport() {
-    # Judged per statement, per block and per word (AUDIT-45-1/2/4). The earlier rule kept one
-    # registry entry per method, so a local named "width" inside an "if" exempted the whole
-    # method including the reads outside that block - and because the registry was filled in one
-    # pass over the line, a declaration that came *after* a read still exempted it. It also
-    # judged by name, so a string that merely mentioned width, or a call to a method of that
-    # name, was reported as a field read. So: strip string literals, open a scope on every brace,
-    # look a name up along the enclosing blocks, register a declaration only after judging the
-    # statement it sits in, and drop "width(" / "height(" before the search.
-    awk '
+    # Judged per statement, per block and per word (AUDIT-45-1/2/4): a scope opens on every
+    # brace, a name is looked up along the enclosing blocks, a declaration counts only after
+    # the statement it sits in has been judged, and "width(" / "height(" is a method, not the
+    # field. What changed in R52-5: comment handling is no longer a per-line guess ("skip the
+    # lines that start with a star"), it is the shared lexer in src/test/resources/guard-lex.awk
+    # - a block comment that opens on one line and runs on for three more is code's absence,
+    # not code, and the prose inside it cannot be read as a field (the old rule reported
+    # "measured against width and height" on a continuation line).
+    local f
+    for f in "$@"; do
+    awk -v file="$f" '
       # every brace opens a scope; a name is visible in the block that declares it and below
       function visible(id, name,   b) {
         b = id
@@ -336,12 +504,7 @@ viewport() {
           b = parent[b]
         }
       }
-      # strings and chars are prose, not code (AUDIT-45-4)
-      function strip(s) {
-        gsub(/"[^"]*"/, "\"\"", s)
-        gsub(/\x27[^\x27]*\x27/, "\x27\x27", s)
-        return s
-      }
+      # strings and chars were blanked by the lexer before this program saw the line
       # "width()" is a method of that name, not the field
       function calls(s) {
         gsub(/width[ \t]*\(/, "width_(", s)
@@ -379,15 +542,15 @@ viewport() {
       # statement - a declaration on a later line is still a read before it (AUDIT-45-2)
       function judge(stmt,   code, k, name) {
         register(stmt)
-        code = calls(strip(stmt))
+        code = calls(stmt)
         if (code ~ /this\.(width|height)([^a-zA-Z0-9_]|$)/) {
-          printf "%s:%d: a page reads this.width / this.height instead of vw() / vh()\n", FILENAME, FNR
+          printf "%s:%d: a page reads this.width / this.height instead of vw() / vh()\n", file, FNR
           return
         }
         for (k = 1; k <= 2; k++) {
           name = (k == 1) ? "width" : "height"
           if (code ~ ("(^|[^a-zA-Z0-9_.])" name "([^a-zA-Z0-9_]|$)") && !visible(scope, name)) {
-            printf "%s:%d: a page reads a bare " name " instead of vw() / vh()\n", FILENAME, FNR
+            printf "%s:%d: a page reads a bare " name " instead of vw() / vh()\n", file, FNR
             return
           }
         }
@@ -398,11 +561,9 @@ viewport() {
       }
       FNR == 1 { depth = 0; scope = 0; nextId = 0; target = 0; delete declared; delete parent }
       {
+        # the lexer already removed the comments (block ones across lines) and blanked the
+        # string literals, so every word left on this line is code (R52-2, R52-5)
         line = $0
-        line = strip(line)                              # a string is not a read
-        sub(/\/\/.*$/, "", line)                        # and a line comment is not one either
-        gsub(/\/\*([^*]|\*+[^*/])*\*+\//, "", line)      # nor is a block comment inside a line
-        if (line ~ /^[ \t]*(\/\*|\*)/) next             # javadoc body
         stmt = ""
         for (i = 1; i <= length(line); i++) {
           c = substr(line, i, 1)
@@ -424,7 +585,8 @@ viewport() {
         }
         statements(stmt)
       }
-    ' "$@"
+    ' <(clean "$f")
+    done
 }
 
 beforetick() {
@@ -853,6 +1015,57 @@ case "$JSON_TRAIL" in
     *"a comma before the closing brace"*) ;;
     *) echo "guard self-check: a trailing comma is not reported (AUDIT-45-6):" >&2; echo "$JSON_TRAIL" >&2; exit 1 ;;
 esac
+# R51-3/R51-4: the two judges above read statements and code, not lines and words. A branch
+# written the wrong way round must be reported, a legal wrap must not be, and a multiply must
+# not be mistaken for the start of a comment (it used to swallow the closing brace after it).
+printf 'class Inv {\n    int shift(boolean walk, double c, int run, int room) {\n        int s = walk ? 0 : HudLayout.verticalScrollCycle(c, run, room);\n        return s;\n    }\n}\n' > "$SAMPLES/Inv.java"
+printf 'class Wrap {\n    int shift(boolean walk, double c, int run, int room) {\n        int s = walk\n                ? HudLayout.verticalScrollCycle(c, run, room)\n                : 0;\n        return s;\n    }\n}\n' > "$SAMPLES/Wrap.java"
+printf 'class Body {\n    private void a(int x, int y) {\n        int w = x * y; }\n    private void other() {\n        HudLayout.verticalScroll(1.0d, 2, 3);\n    }\n}\n' > "$SAMPLES/Body.java"
+WALK_INV="$(walk_scan "$SAMPLES/Inv.java" || true)"
+case "$WALK_INV" in
+    *Inv.java:3:*) ;;
+    *) echo "guard self-check: an inverted walk branch is not reported (R51-3):" >&2; echo "$WALK_INV" >&2; exit 1 ;;
+esac
+WALK_WRAP="$(walk_scan "$SAMPLES/Wrap.java" || true)"
+if [ -n "$WALK_WRAP" ]; then
+    echo "guard self-check: a legal wrap of the walk call is reported (R51-3)" >&2
+    echo "$WALK_WRAP" >&2
+    exit 1
+fi
+BODY_HITS="$(body_has "$SAMPLES/Body.java" "private void a(" "HudLayout.verticalScroll(" || true)"
+if [ "$BODY_HITS" != "no" ]; then
+    echo "guard self-check: a multiply is read as the start of a comment (R51-4)" >&2
+    exit 1
+fi
+# R52-1/R52-2/R52-5: the same three judges one shape further out. The walk switch may be an
+# if as well as a ternary, a string literal may contain a comment marker without ending the
+# method body, and a block comment's continuation line is not code.
+printf 'class IfShape {\n    int shift(boolean walk, double c, int run, int room) {\n        if (walk) {\n            int s = HudLayout.verticalScrollCycle(c, run, room);\n            return s;\n        }\n        return 0;\n    }\n}\n' > "$SAMPLES/IfShape.java"
+printf 'class IfNot {\n    int shift(boolean walk, double c, int run, int room) {\n        if (!walk) {\n            int s = HudLayout.verticalScrollCycle(c, run, room);\n            return s;\n        }\n        return 0;\n    }\n}\n' > "$SAMPLES/IfNot.java"
+printf 'class StrBody {\n    private void a(int x, int y) {\n        String note = "see // not a comment"; }\n    private void other() {\n        HudLayout.verticalScroll(0.0d, 2, 3);\n    }\n}\n' > "$SAMPLES/StrBody.java"
+printf 'class Page {\n    void draw() {\n        /* the band is\n           measured against width and height here\n        */\n        int x = vw();\n    }\n}\n' > "$SAMPLES/BlockCmt.java"
+IFSHAPE_HITS="$(walk_scan "$SAMPLES/IfShape.java" || true)"
+if [ -n "$IFSHAPE_HITS" ]; then
+    echo "guard self-check: an if-shaped walk switch is reported (R52-1)" >&2
+    echo "$IFSHAPE_HITS" >&2
+    exit 1
+fi
+IFNOT_HITS="$(walk_scan "$SAMPLES/IfNot.java" || true)"
+case "$IFNOT_HITS" in
+    *IfNot.java:4:*) ;;
+    *) echo "guard self-check: an inverted if walk switch is not reported (R52-1):" >&2; echo "$IFNOT_HITS" >&2; exit 1 ;;
+esac
+STRBODY_HITS="$(body_has "$SAMPLES/StrBody.java" "private void a(" "HudLayout.verticalScroll(" || true)"
+if [ "$STRBODY_HITS" != "no" ]; then
+    echo "guard self-check: a string is read as the start of a comment (R52-2)" >&2
+    exit 1
+fi
+BLOCKC_HITS="$(viewport "$SAMPLES/BlockCmt.java" || true)"
+if [ -n "$BLOCKC_HITS" ]; then
+    echo "guard self-check: a block comment continuation line is read as code (R52-5)" >&2
+    echo "$BLOCKC_HITS" >&2
+    exit 1
+fi
 rm -rf "$SAMPLES"
 
 # every file that can put a word on the screen, not just the settings page: the update

@@ -19,6 +19,7 @@ import org.yinyun.smtcraft.mpris.Wire;
 
 import org.yinyun.smtcraft.util.Async;
 import org.yinyun.smtcraft.util.Budgets;
+import org.yinyun.smtcraft.util.HudLayout;
 import org.yinyun.smtcraft.util.UiScale;
 import org.yinyun.smtcraft.util.UpdateCheck;
 import org.yinyun.smtcraft.util.Watchdog;
@@ -41,6 +42,30 @@ import java.util.zip.Deflater;
  * anywhere a JDK is available (see test.sh).
  */
 public final class SelfTest {
+    /**
+     * The largest change one frame makes, over {@code seconds} of clock at 0.05 s steps.
+     *
+     * <p>The scrolling functions are continuous by construction: they hold, then travel, then
+     * hold again, and the return leg passes through the same positions on the way back. A step
+     * larger than the travel of one frame means the clock itself was cut (R51-1).</p>
+     */
+    private static float worstStep(double seconds, boolean cycling) {
+        float worst = 0.0f;
+        float previous = cycling
+                ? HudLayout.scrollCycle(200.0f, 0.0d, HudLayout.MARQUEE_SPEED,
+                        HudLayout.MARQUEE_PAUSE)
+                : HudLayout.verticalScroll(0.0d, 300, 100);
+        for (double t = 0.05d; t < seconds; t += 0.05d) {
+            float now = cycling
+                    ? HudLayout.scrollCycle(200.0f, t, HudLayout.MARQUEE_SPEED,
+                            HudLayout.MARQUEE_PAUSE)
+                    : HudLayout.verticalScroll(t, 300, 100);
+            worst = Math.max(worst, Math.abs(now - previous));
+            previous = now;
+        }
+        return worst;
+    }
+
     /** Public upstream constant, kept here so the test does not need the private field. */
     private static final byte[] QQ_KEY =
             "!@#)(*$%123ZXC!@!@#)(NHL".getBytes(StandardCharsets.US_ASCII);
@@ -84,6 +109,7 @@ public final class SelfTest {
         smootherRejectsAMismatchedStep();
         followOffsetPinsTheSungEdge();
         uiScaleFollowsTheGuiScale();
+        hudLayoutArrangesTheTwoBlocks();
         releaseCheckReadsTagsAndOrdersThem();
         updateCheckFallsBackPastTheApi();
 
@@ -1297,6 +1323,210 @@ public final class SelfTest {
         check("a fractional notch still moves", UiScale.scrollStep(0.05d, 2.0f) == 1);
         check("no notch does not move", UiScale.scrollStep(0.0d, 1.0f) == 0);
     }
+
+    /**
+     * The side-by-side panel is two blocks placed inside one panel, so the arithmetic that decides
+     * where they sit is the whole feature. Every case is checked as a rectangle list rather
+     * than as "the panel looks right": a stack that silently overlaps, or a side-by-side
+     * panel that hangs the shorter block from the top edge, is exactly what a screenshot
+     * hides.
+     */
+    private static void hudLayoutArrangesTheTwoBlocks() {
+        check("side is chosen by its name", HudLayout.side("side") && HudLayout.side(" SIDE "));
+        check("a stacked panel is not side by side",
+                !HudLayout.side("stack") && !HudLayout.side(null));
+        check("the switch writes back the stored name", HudLayout.SIDE.equals(HudLayout.name(true))
+                && HudLayout.STACK.equals(HudLayout.name(false)));
+
+        // 200x58 track block, 200x40 lyric band
+        int[] stacked = HudLayout.arrange(false, true, 200, 58, 200, 40);
+        check("a stacked panel is the sum of the two heights",
+                stacked[4] == 200 && stacked[5] == 98);
+        check("the track block sits on top", stacked[0] == 0 && stacked[1] == 0
+                && stacked[2] == 0 && stacked[3] == 58);
+        int[] swapped = HudLayout.arrange(false, false, 200, 58, 200, 40);
+        check("the lyric band can take the top slot", swapped[3] == 0 && swapped[1] == 40);
+
+        int[] side = HudLayout.arrange(true, true, 200, 58, 200, 40);
+        check("a side-by-side panel is as wide as both blocks and the gap",
+                side[4] == 200 + HudLayout.GAP + 200);
+        check("a side-by-side panel is as tall as the taller block", side[5] == 58);
+        check("the track block keeps the left column",
+                side[0] == 0 && side[2] == 200 + HudLayout.GAP);
+        check("the shorter block is centred, not hung from the top", side[3] == (58 - 40) / 2);
+        int[] right = HudLayout.arrange(true, false, 200, 58, 200, 40);
+        check("the track block can keep the right column",
+                right[0] == 200 + HudLayout.GAP && right[2] == 0);
+
+        // no lyrics: there is nothing to put beside the track block
+        int[] noBand = HudLayout.arrange(true, true, 200, 58, 200, 0);
+        check("a panel with no lyric band stays stacked", noBand[4] == 200 && noBand[5] == 58
+                && noBand[2] == 0 && noBand[3] == 58);
+        // lyrics only: the track block has no height
+        int[] bandOnly = HudLayout.arrange(true, true, 200, 0, 200, 40);
+        check("a lyrics-only panel is just the band", bandOnly[4] == 200 && bandOnly[5] == 40);
+
+        SmtcConfig cfg = new SmtcConfig();
+        cfg.hudLayout = "diagonally";
+        cfg.normalise();
+        check("a layout that does not exist falls back to the stack",
+                HudLayout.STACK.equals(cfg.hudLayout));
+        cfg.hudLayout = " SIDE ";
+        cfg.normalise();
+        check("a layout name is normalised", HudLayout.SIDE.equals(cfg.hudLayout));
+        cfg.hudLayout = " vertical ";
+        cfg.normalise();
+        check("the vertical layout survives normalising",
+                HudLayout.VERTICAL.equals(cfg.hudLayout) && HudLayout.vertical(cfg.hudLayout));
+        cfg.hudLayout = "VERTICAL";
+        cfg.normalise();
+        check("the vertical name is case blind", HudLayout.VERTICAL.equals(cfg.hudLayout));
+        check("only the vertical name makes a column panel",
+                !HudLayout.vertical("side") && !HudLayout.vertical(HudLayout.STACK)
+                        && !HudLayout.vertical(null));
+        check("a panel name is cleaned to one of three",
+                HudLayout.VERTICAL.equals(HudLayout.clean(" vertical "))
+                        && HudLayout.SIDE.equals(HudLayout.clean("Side"))
+                        && HudLayout.STACK.equals(HudLayout.clean("diagonally"))
+                        && HudLayout.STACK.equals(HudLayout.clean(null)));
+        check("turning the vertical panel off goes back to the stack",
+                HudLayout.VERTICAL.equals(
+                        HudLayout.vertical(HudLayout.VERTICAL) ? HudLayout.VERTICAL : HudLayout.STACK)
+                        && HudLayout.STACK.equals(HudLayout.clean(HudLayout.STACK)));
+        check("the track block leads by default", new SmtcConfig().trackFirst);
+
+        // A side-by-side column hugs the seam rather than centring inside itself: the edge it
+        // hugs is the one next to the other block, and that direction follows the switches,
+        // not the window (m11885).
+        check("the right column hugs its left edge",
+                HudLayout.seamAlign(true, true) == HudLayout.LEFT);
+        check("the left column hugs its right edge",
+                HudLayout.seamAlign(true, false) == HudLayout.RIGHT);
+        check("a stacked panel keeps its text centred",
+                HudLayout.seamAlign(false, true) == HudLayout.CENTRE
+                        && HudLayout.seamAlign(false, false) == HudLayout.CENTRE);
+        // a 200 design-pixel column with 8 px padding has 184 px of room
+        check("a left-hugging run starts at the padding",
+                HudLayout.textLeft(HudLayout.LEFT, 60, 200, 8) == 8);
+        check("a right-hugging run ends at the padding",
+                HudLayout.textLeft(HudLayout.RIGHT, 60, 200, 8) == 200 - 8 - 60);
+        check("a centred run keeps the middle",
+                HudLayout.textLeft(HudLayout.CENTRE, 60, 200, 8) == 8 + (184 - 60) / 2);
+        check("a run wider than the column keeps the padding",
+                HudLayout.textLeft(HudLayout.RIGHT, 400, 200, 8) == 8);
+
+        // Vertical columns read right to left, so the line being sung sits one column in from
+        // the right edge, the line already read sits on the right, and the next line waits on
+        // the left (m11944).
+        check("a vertical column is a glyph box plus room",
+                HudLayout.columnWidth(1.0f) == 13);
+        check("a vertical column scales with the text",
+                HudLayout.columnWidth(2.0f) > HudLayout.columnWidth(1.0f));
+        check("a column step leaves a gap between columns",
+                HudLayout.columnStep(1.0f) == HudLayout.columnWidth(1.0f) + 3);
+        // lyric columns sit closer than track columns: two lines of one song, not two rows
+        // of a table (m12141, m12197)
+        check("lyric columns sit closer than track columns",
+                HudLayout.lyricStep(1.0f) == HudLayout.columnWidth(1.0f) + 1
+                        && HudLayout.lyricStep(1.0f) < HudLayout.columnStep(1.0f));
+        check("a lyric step scales with the text",
+                HudLayout.lyricStep(2.0f) > HudLayout.lyricStep(1.0f)
+                        && HudLayout.lyricStep(Float.NaN) == HudLayout.lyricStep(1.0f));
+        // a column cannot marquee sideways, so a run taller than the strip walks instead
+        check("a run that fits does not scroll",
+                HudLayout.verticalScroll(5.0f, 80, 100) == 0
+                        && HudLayout.verticalScroll(0.0f, 100, 100) == 0);
+        check("a long run rests before it starts",
+                HudLayout.verticalScroll(0.0f, 300, 100) == 0
+                        && HudLayout.verticalScroll(HudLayout.MARQUEE_PAUSE * 0.5f, 300, 100) == 0);
+        check("a long run reaches its last glyph at the end of the trip",
+                HudLayout.verticalScroll(
+                        HudLayout.MARQUEE_PAUSE + 200.0f / HudLayout.MARQUEE_SPEED, 300, 100) == 200);
+        check("a long run never scrolls past its own length",
+                HudLayout.verticalScroll(4.0f, 300, 100) <= 200
+                        && HudLayout.verticalScroll(30.0f, 300, 100) <= 200);
+        // one pace for every scroller: the column walks as fast as the marquee (m12491). A run
+        // that starts at 1.25 s is still holding at the old 1.2 s rest and only just moving.
+        check("the column walks at the marquee's pace",
+                HudLayout.verticalScroll(1.25f, 300, 100) == 0
+                        && HudLayout.verticalScroll(HudLayout.MARQUEE_PAUSE
+                                + 200.0f / HudLayout.MARQUEE_SPEED, 300, 100) == 200
+                        && HudLayout.MARQUEE_SPEED > 22.0f);
+        // one way only: once the tail is in view it stays in view, horizontally and vertically
+        check("a long run stays at its tail instead of coming back",
+                HudLayout.verticalScroll(600.0f, 300, 100) == 200
+                        && HudLayout.verticalScroll(1200.0f, 300, 100) == 200);
+        check("a marquee stays at its tail instead of coming back",
+                HudLayout.scrollOver(200.0f, 600.0f, 26.0f, 1.3f) == 200.0f
+                        && HudLayout.scrollOver(200.0f, 900.0f, 26.0f, 1.3f) == 200.0f
+                        && HudLayout.scrollOver(0.0f, 900.0f, 26.0f, 1.3f) == 0.0f);
+        // ... and a title walks back: only the lyrics are one way (m12414)
+        check("a title walks down and comes back",
+                HudLayout.verticalScrollCycle(30.0f, 300, 100) >= 0
+                        && HudLayout.verticalScrollCycle(400.0f, 300, 100) >= 0
+                        && HudLayout.verticalScrollCycle(
+                                HudLayout.MARQUEE_PAUSE + 200.0f / HudLayout.MARQUEE_SPEED, 300, 100)
+                                == 200);
+        float cycleTravel = 200.0f / 26.0f;
+        float cyclePeriod = 2.0f * (cycleTravel + 1.3f);
+        float onTheWayBack = HudLayout.scrollCycle(200.0f, cyclePeriod - cycleTravel * 0.5f, 26.0f,
+                1.3f);
+        check("a title comes back to its first glyph",
+                HudLayout.scrollCycle(200.0f, cyclePeriod, 26.0f, 1.3f) == 0.0f
+                        && HudLayout.scrollCycle(200.0f, 1.3f + cycleTravel, 26.0f, 1.3f) == 200.0f
+                        && onTheWayBack > 0.0f && onTheWayBack < 200.0f);
+        check("a title that fits still does not move",
+                HudLayout.scrollCycle(0.0f, 50.0f, 26.0f, 1.3f) == 0.0f
+                        && HudLayout.verticalScrollCycle(50.0f, 100, 100) == 0);
+        // both walks are the same curve (R49-5): a tenth of the way in, the eased travel is
+        // behind the straight line, and both ends still land exactly on their stop
+        float tenthWay = HudLayout.scrollCycle(200.0f, 1.3f + cycleTravel * 0.1f, 26.0f, 1.3f);
+        float tenthOneWay = HudLayout.scrollOver(200.0f, 1.3f + cycleTravel * 0.1f, 26.0f, 1.3f);
+        check("the two walks share one curve",
+                tenthWay > 0.0f && tenthWay < 20.0f
+                        && tenthOneWay > 0.0f && tenthOneWay < 20.0f
+                        && Math.abs(tenthWay - tenthOneWay) < 0.5f);
+        // The cycling walk must be continuous in its own clock. Wrapping the clock first, on a
+        // constant that is not a whole number of cycles, sent every column back to its first
+        // glyph once an hour - up to 159 px in one frame, different for every column (R51-1).
+        // Two hours of samples at 0.05 s. The ceiling is one frame of travel at the current
+        // speed, not a number borrowed from today's constant: a flat 2.0 px sat 2.57 % above
+        // the measured 1.95 px, so making the marquee a little faster failed a test whose
+        // message talks about the clock (R52-4).
+        float still = 1.6f * HudLayout.MARQUEE_SPEED * 0.05f;
+        // The vertical walk answers in whole pixels, so one frame can round up by one on top
+        // of the travel: the bound for that path carries the rounding, the cycling path does
+        // not answer in pixels at all and is held to the travel itself (R52-4).
+        check("a title never jumps back on the hour", worstStep(7200.0d, true) <= still);
+        check("a long run never jumps back on the hour", worstStep(7200.0d, false) <= still + 1.0f);
+        // ...and the ceiling still has to be tight enough, or it stops being a test: the jump
+        // it guards is measured in tens of pixels, while a frame of travel is about two, so
+        // the measured worst step must sit close under the bound (R52-4).
+        check("the jump bound is one frame of travel, not a borrowed number",
+                still >= 1.5f && still <= 3.6f && worstStep(7200.0d, true) >= still * 0.5f);
+        // the vertical height slider has to reach 0 for "auto", which leaves the pixels just
+        // above it meaning nothing on their own: they snap to the shortest height the panel can
+        // use instead of printing a number the panel then ignores (R49-4)
+        check("the height slider snaps to a height the panel can use",
+                SmtcConfig.verticalHeightOf(0.0d) == 0
+                        && SmtcConfig.verticalHeightOf(0.4d) == 0
+                        && SmtcConfig.verticalHeightOf(50.0d) == SmtcConfig.MIN_VERTICAL_H
+                        && SmtcConfig.verticalHeightOf(96.0d) == 96
+                        && SmtcConfig.verticalHeightOf(900.0d) == SmtcConfig.MAX_VERTICAL_H);
+        check("a broken scale still gives a column",
+                HudLayout.columnWidth(0.0f) == HudLayout.columnWidth(1.0f)
+                        && HudLayout.columnWidth(Float.NaN) == HudLayout.columnWidth(1.0f));
+        int sungColumn = HudLayout.columnLeft(0, 400, 8, 1.0f);
+        int previousColumn = HudLayout.columnLeft(-1, 400, 8, 1.0f);
+        int nextColumn = HudLayout.columnLeft(1, 400, 8, 1.0f);
+        check("the line being sung is one column in from the right",
+                sungColumn == 400 - 8 - HudLayout.columnWidth(1.0f) - HudLayout.columnStep(1.0f));
+        check("columns run from right to left",
+                previousColumn > sungColumn && sungColumn > nextColumn);
+        check("a column that falls off the left edge is negative",
+                HudLayout.columnLeft(40, 200, 8, 1.0f) < 0);
+    }
+
 
     /**
      * The release check is mostly string work, and each part of it decides whether a player

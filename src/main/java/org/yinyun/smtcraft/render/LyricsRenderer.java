@@ -30,9 +30,6 @@ public final class LyricsRenderer {
     /** Notes shorter than this never swell, however short the rest of the line is. */
     private static final float HELD_MIN_MS = 210.0f;
 
-    /** Marquee timing: hold at both ends, then slide. */
-    private static final float MARQUEE_SPEED = 26.0f;
-    private static final float MARQUEE_PAUSE = 1.3f;
 
     private LyricsRenderer() {}
 
@@ -174,13 +171,154 @@ public final class LyricsRenderer {
         draw(g, font, text, Math.round(centerX - scaled / 2.0f), y, color, look, scale);
     }
 
+    // ------------------------------------------------------------- vertical text
+    //
+    // CJK vertical typesetting turns each glyph a quarter turn clockwise and reads the run
+    // downwards; columns then follow each other from right to left. Drawing one glyph at a
+    // time through the pose stack keeps the glyph atlas, the font override and the shadow
+    // flags exactly as they are for the horizontal path - there is no second font path to
+    // keep in step with 26.3's font handling.
+
     /**
-     * Text that scrolls inside {@code maxWidth} when it does not fit: hold, slide
-     * to the end, hold, jump back. Glyphs outside the box are skipped, so no
-     * scissor is needed and the panel can be anchored anywhere.
+     * One vertical run: glyphs down from {@code top}, each turned a quarter turn clockwise so
+     * the line reads top to bottom with the glyphs' own tops pointing right.
+     *
+     * @param hot      colour of the glyphs already sung
+     * @param quiet    colour of the rest of the run
+     * @param progress how much of the run has been sung, 0..1; anything else stays quiet
+     * @return how far down the run reached, in screen pixels
+     */
+    public static int verticalRun(GuiGraphicsExtractor g, Font font, String text, int x, int top,
+                                  int maxHeight, int hot, int quiet, float progress, Look look,
+                                  float scale) {
+        return verticalRun(g, font, text, x, top, maxHeight, hot, quiet, progress, look, scale,
+                false, 0.0f, 0);
+    }
+
+    /**
+     * One vertical run with the karaoke bead: the glyph the play head is inside is part one
+     * colour and part the other, and the glyphs within {@code peakRange} design pixels of the
+     * head are brightened and grown a little. Without this the column only ever flipped whole
+     * glyphs from quiet to hot, which reads as a jump every character instead of a sweep.
+     */
+    public static int verticalRun(GuiGraphicsExtractor g, Font font, String text, int x, int top,
+                                  int maxHeight, int hot, int quiet, float progress, Look look,
+                                  float scale, boolean peak, float peakAmount, int peakRange) {
+        if (text == null || text.isEmpty() || maxHeight <= 0) return 0;
+        int[] cps = text.codePoints().toArray();
+        float cell = Math.max(1.0f, LINE_H * (nearOne(scale) ? 1.0f : scale));
+        float head = progress > 0.0f ? Math.min(1.0f, progress) * cps.length : 0.0f;
+        float peakCells = Math.max(1.0f, peakRange / cell);
+        int drawn = 0;
+        for (int i = 0; i < cps.length; i++) {
+            int cp = cps[i];
+            float glyph = glyphWidth(font, cp, look) * (nearOne(scale) ? 1.0f : scale);
+            int advance = Math.max(Math.round(cell), Math.round(glyph) + 1);
+            if (drawn + advance > maxHeight) break;
+            float sung = Math.max(0.0f, Math.min(1.0f, head - i));
+            int color = sung > 0.0f ? Draw.lerp(quiet, hot, sung) : quiet;
+            float grow = 1.0f;
+            if (peak && peakAmount > 0.01f) {
+                float near = 1.0f - Math.min(1.0f, Math.abs(i + 0.5f - head) / peakCells);
+                float swell = peakAmount * smooth(near);
+                if (swell > 0.001f) {
+                    color = Draw.lerp(color, 0xFFFFFFFF, Math.min(0.7f, swell));
+                    // the bead swells the glyph, but its advance stays put: a column whose
+                    // spacing breathed with the music would look like it was shaking
+                    grow = 1.0f + 0.22f * swell;
+                }
+            }
+            // a run of spaces has nothing to turn, but it still holds its place in the column
+            if (!Character.isWhitespace(cp)) {
+                drawTurned(g, font, glyphText(cp), cp, x, top + drawn, color, look, scale, grow);
+            }
+            drawn += advance;
+        }
+        return drawn;
+    }
+
+    /**
+     * True for the scripts a vertical run leaves standing: Han, kana, hangul, bopomofo and the
+     * fullwidth forms. Their glyphs already read with their top up, so the column keeps its
+     * rhythm and the bead lands on the same line; everything else - Latin letters, digits,
+     * ASCII punctuation - is turned a quarter turn clockwise, which is the only way a Latin
+     * run reads while it marches down a column (m12239).
+     */
+    public static boolean upright(int codePoint) {
+        switch (Character.UnicodeScript.of(codePoint)) {
+            case HAN:
+            case HIRAGANA:
+            case KATAKANA:
+            case HANGUL:
+            case BOPOMOFO:
+                return true;
+            default:
+                break;
+        }
+        return (codePoint >= 0x3000 && codePoint <= 0x303F)
+                || (codePoint >= 0xFE30 && codePoint <= 0xFE4F)
+                || (codePoint >= 0xFF00 && codePoint <= 0xFF60)
+                || (codePoint >= 0xFFE0 && codePoint <= 0xFFE6);
+    }
+
+    /** How far down a run reaches at {@code scale}, in pixels: the sum of its advances. */
+    public static int verticalHeight(Font font, String text, Look look, float scale) {
+        if (text == null || text.isEmpty()) return 0;
+        float cell = Math.max(1.0f, LINE_H * (nearOne(scale) ? 1.0f : scale));
+        int total = 0;
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            i += Character.charCount(cp);
+            float glyph = glyphWidth(font, cp, look) * (nearOne(scale) ? 1.0f : scale);
+            total += Math.max(Math.round(cell), Math.round(glyph) + 1);
+        }
+        return total;
+    }
+
+    /** One glyph of a vertical run: turned for CJK, upright for Latin, centred in its cell. */
+    private static void drawTurned(GuiGraphicsExtractor g, Font font, String glyph, int cp,
+                                   int x, int y, int color, Look look, float scale, float grow) {
+        float box = font.lineHeight * (nearOne(scale) ? 1.0f : scale);
+        float s = scale * grow;
+        g.pose().pushMatrix();
+        try {
+            if (upright(cp)) {
+                // the glyph's own top stays up, centred in the cell so the column's left edge
+                // does not jog from one character to the next. The scale has to reach the
+                // glyph here too - this branch used to draw at 1.0 and only apply the bead's
+                // swell, so the lyric size slider moved the column spacing of a CJK run and
+                // nothing else (m12323).
+                float cw = LINE_H * (nearOne(scale) ? 1.0f : scale) * 1.15f;
+                float wide = glyphWidth(font, cp, look) * s;
+                g.pose().translate(x + (cw - wide) / 2.0f,
+                        y + (box - font.lineHeight * s) / 2.0f);
+                if (!nearOne(s)) g.pose().scale(s);
+                text(g, font, glyph, 0, 0, color, look);
+                return;
+            }
+            // Latin and digits take the clockwise quarter turn: the glyph's top faces right and
+            // the run still marches down the column. rotate(90) sends the glyph box
+            // (0..w, 0..h) to (-h..0, 0..w), so shifting the origin right by one cell puts its
+            // left edge at x and its top at y.
+            g.pose().translate(x + box, y);
+            g.pose().rotate((float) (Math.PI / 2.0));
+            if (!nearOne(s)) g.pose().scale(s);
+            text(g, font, glyph, 0, 0, color, look);
+        } finally {
+            g.pose().popMatrix();
+        }
+    }
+
+    /**
+     * Text that scrolls inside {@code maxWidth} when it does not fit: hold, slide to the end,
+     * hold, slide back - the same balanced pit that {@link #marqueeOffset} describes and that
+     * {@code HudLayout.scrollCycle} draws. The way back used to be a jump, which read as a
+     * different animation from the outbound one (R49-5); this javadoc kept saying "jump back"
+     * for another round (R50-2). Glyphs outside the box are skipped, so no scissor is needed
+     * and the panel can be anchored anywhere.
      */
     public static void marquee(GuiGraphicsExtractor g, Font font, String text, int x, int y,
-                               int maxWidth, int color, Look look, float scale, float clock,
+                               int maxWidth, int color, Look look, float scale, double clock,
                                boolean enabled) {
         if (text == null || text.isEmpty() || maxWidth <= 0) return;
         int textW = width(font, text, look);
@@ -196,7 +334,7 @@ public final class LyricsRenderer {
 
     public static void marqueeCentered(GuiGraphicsExtractor g, Font font, String text, int centerX,
                                        int y, int maxWidth, int color, Look look, float scale,
-                                       float clock, boolean enabled) {
+                                       double clock, boolean enabled) {
         int textW = Math.round(width(font, text, look) * scale);
         int x = leftForWidth(textW, maxWidth, centerX);
         marquee(g, font, text, x, y, maxWidth, color, look, scale, clock, enabled);
@@ -209,16 +347,40 @@ public final class LyricsRenderer {
         return boxLeft;
     }
 
-    private static float marqueeOffset(float overflow, float clock) {
-        float travel = Math.max(1.0f, overflow / MARQUEE_SPEED);
-        float cycle = MARQUEE_PAUSE + travel + MARQUEE_PAUSE;
-        float u = clock % cycle;
-        if (u < MARQUEE_PAUSE) return 0.0f;
-        u -= MARQUEE_PAUSE;
-        if (u >= travel) return overflow;
-        float t = u / travel;
-        float eased = t * t * (3.0f - 2.0f * t);
-        return overflow * eased;
+    /**
+     * How far a too-wide run has scrolled at {@code clock} seconds, the cycling way: hold, slide,
+     * hold, slide back. Track titles and artists use this - they are short, and parking a title
+     * at its tail would hide its beginning (m12414).
+     */
+    public static float marqueeOffset(float overflow, double clock) {
+        return org.yinyun.smtcraft.util.HudLayout.scrollCycle(overflow, clock,
+                org.yinyun.smtcraft.util.HudLayout.MARQUEE_SPEED,
+                org.yinyun.smtcraft.util.HudLayout.MARQUEE_PAUSE);
+    }
+
+    /**
+     * The one-way scroll a lyric row uses (m12372): hold, slide to the last glyph, stay there.
+     * A song line read back and forth never lets the eye settle on its tail.
+     */
+    public static float lyricOffset(float overflow, double clock) {
+        return org.yinyun.smtcraft.util.HudLayout.scrollOver(overflow, clock,
+                org.yinyun.smtcraft.util.HudLayout.MARQUEE_SPEED,
+                org.yinyun.smtcraft.util.HudLayout.MARQUEE_PAUSE);
+    }
+
+    /** {@link #marquee} with the lyric row's one-way scroll. */
+    public static void marqueeCenteredOnce(GuiGraphicsExtractor g, Font font, String text,
+                                           int centerX, int y, int maxWidth, int color, Look look,
+                                           float scale, double clock, boolean enabled) {
+        if (text == null || text.isEmpty()) return;
+        int textW = Math.round(width(font, text, look) * scale);
+        int x = leftForWidth(textW, maxWidth, centerX);
+        if (!enabled || textW <= maxWidth + 0.5f) {
+            draw(g, font, text, x, y, color, look, scale);
+            return;
+        }
+        clipDraw(g, font, text, x, y, maxWidth, color, look, scale,
+                lyricOffset(textW - maxWidth, clock));
     }
 
     /** Per glyph draw with a manual left/right clip in design space. */
@@ -259,7 +421,7 @@ public final class LyricsRenderer {
     public static void karaokeLine(GuiGraphicsExtractor g, Font font, String text, int centerX,
                                    int y, int maxWidth, int hotColor, int quietColor, float progress,
                                    Look look, float scale, boolean noteEase, boolean peak,
-                                   float peakAmount, int peakRange, float clock, boolean marquee,
+                                   float peakAmount, int peakRange, double clock, boolean marquee,
                                    List<LyricLine.Word> words, long positionMs) {
         karaokeLine(g, font, text, centerX, y, maxWidth, hotColor, quietColor, progress, look,
                 scale, noteEase, peak, peakAmount, peakRange, clock, marquee, words, positionMs,
@@ -279,7 +441,7 @@ public final class LyricsRenderer {
     public static void karaokeLine(GuiGraphicsExtractor g, Font font, String text, int centerX,
                                    int y, int maxWidth, int hotColor, int quietColor, float progress,
                                    Look look, float scale, boolean noteEase, boolean peak,
-                                   float peakAmount, int peakRange, float clock, boolean marquee,
+                                   float peakAmount, int peakRange, double clock, boolean marquee,
                                    List<LyricLine.Word> words, long positionMs, float scrollOffset) {
         Glyphs gl = Glyphs.of(font, text, look);
         if (gl == null) return;

@@ -95,6 +95,22 @@ public final class SmtcConfig {
      */
     public boolean lyricsOnly = false;
 
+    /**
+     * "stack" puts the track block above the lyric band; "side" puts them in two columns,
+     * which is the side-by-side panel. Chosen by a switch rather than by the shape of the
+     * window, so a wide window can still carry the columns. See
+     * {@link org.yinyun.smtcraft.util.HudLayout}.
+     */
+    public String hudLayout = "stack";
+    /** Height of the vertical panel in design pixels; 0 follows the text. */
+    public int verticalPanelHeight = 0;
+
+    /**
+     * Which block comes first: the track block on top of a stacked panel or in the left
+     * column of a side-by-side one. Off swaps them, so the lyrics can lead.
+     */
+    public boolean trackFirst = true;
+
     /** Hide the panel while any screen is open (inventory, settings, chat, pause). */
     public boolean hideWhenScreenOpen = false;
 
@@ -159,6 +175,26 @@ public final class SmtcConfig {
 
     /** Rounded panel corners; 0 keeps the current square panel. */
     public int cornerRadius = 8;
+
+    /** The vertical panel can be as short as one column of a few glyphs, and this tall at most. */
+    public static final int MIN_VERTICAL_H = 96;
+    public static final int MAX_VERTICAL_H = 480;
+
+    /**
+     * What a raw slider position means as a panel height: 0 at the far left - "follow the text" -
+     * and a fixed height inside {@link #MIN_VERTICAL_H}..{@link #MAX_VERTICAL_H} everywhere else.
+     *
+     * <p>The slider has to reach 0 for "auto" to be selectable at all, which leaves the pixels
+     * between it and the shortest legal height with nothing to mean. They used to round to
+     * themselves, get clamped to 96 while drawing, and still be printed in the label - a fifth
+     * of the travel did nothing and the only feedback lied about it (R49-4). Snapping the value
+     * the moment it is read makes the label and the panel agree.</p>
+     */
+    public static int verticalHeightOf(double raw) {
+        if (raw <= 0.5d) return 0;
+        long fixed = Math.round(raw);
+        return (int) Math.max(MIN_VERTICAL_H, Math.min(MAX_VERTICAL_H, fixed));
+    }
 
     /**
      * Range the corner slider offers and {@link #normalise()} accepts. One
@@ -425,8 +461,12 @@ public final class SmtcConfig {
         normaliseOrder();
         scale = clamp(scale, 0.5f, 3.0f);
         panelWidth = (int) Math.round(clamp(panelWidth, 120, 470));
+        verticalPanelHeight = (int) Math.round(clamp(verticalPanelHeight, 0, MAX_VERTICAL_H));
         backgroundOpacity = clamp(backgroundOpacity, 0.0f, 1.0f);
         borderOpacity = clamp(borderOpacity, 0.0f, 1.0f);
+        // a hand edited file can name a layout that does not exist; the panel would then
+        // report the name in the settings row and draw the stack anyway
+        hudLayout = org.yinyun.smtcraft.util.HudLayout.clean(hudLayout);
         cornerRadius = (int) Math.round(clamp(cornerRadius, MIN_CORNER_RADIUS, MAX_CORNER_RADIUS));
         artRadius = (int) Math.round(clamp(artRadius, MIN_ART_RADIUS, MAX_ART_RADIUS));
         offsetX = (int) Math.round(clamp(offsetX, -4096, 4096));
